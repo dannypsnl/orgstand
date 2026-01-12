@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::{Datelike, Local, NaiveDate};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
@@ -6,8 +7,9 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    text::Line,
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Terminal,
 };
@@ -24,6 +26,12 @@ struct TodoEntry {
     level: usize,
 }
 
+#[derive(Clone)]
+enum DateInputType {
+    Scheduled,
+    Deadline,
+}
+
 enum Mode {
     Browser {
         todos: Vec<TodoEntry>,
@@ -36,6 +44,12 @@ enum Mode {
     Editor {
         todo: TodoEntry,
         textarea: TextArea<'static>,
+    },
+    DateInput {
+        todo: TodoEntry,
+        input_type: DateInputType,
+        selected_date: NaiveDate,
+        viewing_month: NaiveDate, // First day of the month being viewed
     },
 }
 
@@ -69,16 +83,58 @@ impl App {
 
     fn scan_org_files(dir: &Path) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
+        Self::scan_org_files_recursive(dir, &mut files, 0)?;
+        files.sort();
+        Ok(files)
+    }
+
+    fn scan_org_files_recursive(dir: &Path, files: &mut Vec<PathBuf>, depth: usize) -> Result<()> {
+        // Limit recursion depth to avoid scanning too deep
+        const MAX_DEPTH: usize = 5;
+        if depth > MAX_DEPTH {
+            return Ok(());
+        }
+
+        // Skip directories that should be ignored
+        if let Some(dir_name) = dir.file_name().and_then(|n| n.to_str()) {
+            // Skip hidden directories (starting with .)
+            if dir_name.starts_with('.') {
+                return Ok(());
+            }
+
+            // Skip common large directories
+            const SKIP_DIRS: &[&str] = &[
+                "node_modules",
+                "target",
+                "build",
+                "dist",
+                ".git",
+                ".svn",
+                "__pycache__",
+                "venv",
+                "env",
+                "Library",
+                "Applications",
+                "System",
+            ];
+
+            if SKIP_DIRS.contains(&dir_name) {
+                return Ok(());
+            }
+        }
+
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("org") {
                     files.push(path);
+                } else if path.is_dir() {
+                    // Recursively scan subdirectories
+                    Self::scan_org_files_recursive(&path, files, depth + 1)?;
                 }
             }
         }
-        files.sort();
-        Ok(files)
+        Ok(())
     }
 
     fn extract_all_todos(dir: &Path) -> Result<Vec<TodoEntry>> {
@@ -249,6 +305,316 @@ impl App {
         Ok(())
     }
 
+    fn toggle_todo_state(&mut self) -> Result<()> {
+        if let Mode::Viewer { todo, .. } = &self.mode {
+            let new_keyword = if todo.keyword == "TODO" {
+                "DONE"
+            } else {
+                "TODO"
+            };
+
+            // Update the keyword in the file
+            let file_content = std::fs::read_to_string(&todo.file_path)?;
+            let updated_content = file_content.replace(
+                &format!("* {} {}", todo.keyword, todo.title),
+                &format!("* {} {}", new_keyword, todo.title),
+            );
+            std::fs::write(&todo.file_path, updated_content)?;
+
+            // Reload the todo
+            let todos = Self::extract_all_todos(&self.directory)?;
+            if let Some(updated) = todos.iter().find(|t| t.title == todo.title && t.file_path == todo.file_path) {
+                self.mode = Mode::Viewer {
+                    todo: updated.clone(),
+                    scroll: 0,
+                };
+            }
+        }
+        Ok(())
+    }
+
+    fn enter_date_input(&mut self, input_type: DateInputType) -> Result<()> {
+        if let Mode::Viewer { todo, .. } = &self.mode {
+            let today = Local::now().date_naive();
+
+            // Try to parse existing date from todo content
+            let initial_date = Self::parse_existing_date(&todo.content, &input_type).unwrap_or(today);
+
+            self.mode = Mode::DateInput {
+                todo: todo.clone(),
+                input_type,
+                selected_date: initial_date,
+                viewing_month: NaiveDate::from_ymd_opt(initial_date.year(), initial_date.month(), 1).unwrap(),
+            };
+        }
+        Ok(())
+    }
+
+    fn parse_existing_date(content: &str, input_type: &DateInputType) -> Option<NaiveDate> {
+        let keyword = match input_type {
+            DateInputType::Scheduled => "SCHEDULED:",
+            DateInputType::Deadline => "DEADLINE:",
+        };
+
+        // Look for lines containing the keyword
+        for line in content.lines() {
+            if let Some(pos) = line.find(keyword) {
+                // Extract date from <YYYY-MM-DD ...>
+                let rest = &line[pos + keyword.len()..];
+                if let Some(start) = rest.find('<') {
+                    if let Some(end) = rest.find('>') {
+                        let date_str = &rest[start + 1..end];
+                        // Parse YYYY-MM-DD (ignore time and day of week)
+                        let parts: Vec<&str> = date_str.split_whitespace().collect();
+                        if let Some(date_part) = parts.first() {
+                            if let Ok(date) = NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
+                                return Some(date);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn submit_date_input(&mut self) -> Result<()> {
+        // Clone data first to avoid borrow conflicts
+        let (todo_clone, input_type_clone, selected_date) = if let Mode::DateInput { todo, input_type, selected_date, .. } = &self.mode {
+            (todo.clone(), input_type.clone(), *selected_date)
+        } else {
+            return Ok(());
+        };
+
+        // Format date as org-mode date string with day of week
+        let weekday = selected_date.format("%a");
+        let date_str = format!("{} {}", selected_date.format("%Y-%m-%d"), weekday);
+
+        // Temporarily switch to viewer mode to release borrow
+        self.mode = Mode::Viewer {
+            todo: todo_clone,
+            scroll: 0,
+        };
+
+        match input_type_clone {
+            DateInputType::Scheduled => {
+                self.add_scheduled_date(&date_str)?;
+            }
+            DateInputType::Deadline => {
+                self.add_deadline_date(&date_str)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn calendar_move_day(&mut self, days: i64) {
+        if let Mode::DateInput { selected_date, viewing_month, .. } = &mut self.mode {
+            if let Some(new_date) = selected_date.checked_add_signed(chrono::Duration::days(days)) {
+                *selected_date = new_date;
+
+                // Update viewing month if we moved to a different month
+                if selected_date.year() != viewing_month.year() || selected_date.month() != viewing_month.month() {
+                    *viewing_month = NaiveDate::from_ymd_opt(
+                        selected_date.year(),
+                        selected_date.month(),
+                        1
+                    ).unwrap();
+                }
+            }
+        }
+    }
+
+    fn calendar_change_month(&mut self, months: i32) {
+        if let Mode::DateInput { selected_date, viewing_month, .. } = &mut self.mode {
+            let new_year = viewing_month.year();
+            let new_month = viewing_month.month() as i32 + months;
+
+            let (final_year, final_month) = if new_month <= 0 {
+                (new_year - 1, (12 + new_month) as u32)
+            } else if new_month > 12 {
+                (new_year + 1, (new_month - 12) as u32)
+            } else {
+                (new_year, new_month as u32)
+            };
+
+            if let Some(new_viewing) = NaiveDate::from_ymd_opt(final_year, final_month, 1) {
+                *viewing_month = new_viewing;
+
+                // Adjust selected date to be in the new month if it's outside
+                if selected_date.year() != final_year || selected_date.month() != final_month {
+                    *selected_date = new_viewing;
+                }
+            }
+        }
+    }
+
+    fn render_calendar(viewing_month: NaiveDate, selected_date: NaiveDate) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+
+        // Month and year header
+        let header = format!("{}", viewing_month.format("%B %Y"));
+        lines.push(Line::from(vec![
+            ratatui::text::Span::styled(header, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        ]));
+        lines.push(Line::from(""));
+
+        // Weekday headers
+        lines.push(Line::from("Su  Mo  Tu  We  Th  Fr  Sa"));
+        lines.push(Line::from("───────────────────────────"));
+
+        // Get first day of month and its weekday
+        let first_day = NaiveDate::from_ymd_opt(viewing_month.year(), viewing_month.month(), 1).unwrap();
+        let first_weekday = first_day.weekday().num_days_from_sunday();
+
+        // Get last day of month
+        let next_month = if viewing_month.month() == 12 {
+            NaiveDate::from_ymd_opt(viewing_month.year() + 1, 1, 1).unwrap()
+        } else {
+            NaiveDate::from_ymd_opt(viewing_month.year(), viewing_month.month() + 1, 1).unwrap()
+        };
+        let last_day = next_month.pred_opt().unwrap().day();
+
+        // Build calendar grid
+        let mut week_line = String::new();
+        // Add spacing for days before first of month
+        for _ in 0..first_weekday {
+            week_line.push_str("    ");
+        }
+
+        for day in 1..=last_day {
+            let current_date = NaiveDate::from_ymd_opt(viewing_month.year(), viewing_month.month(), day).unwrap();
+            let day_str = format!("{:2}", day);
+
+            if current_date == selected_date {
+                // Selected date - highlighted
+                week_line.push_str(&format!("[{}]", day_str));
+            } else if current_date == Local::now().date_naive() {
+                // Today - marked with *
+                week_line.push_str(&format!(" {}*", day_str));
+            } else {
+                week_line.push_str(&format!(" {} ", day_str));
+            }
+
+            let current_weekday = (first_weekday + day - 1) % 7;
+            if current_weekday == 6 {
+                lines.push(Line::from(week_line.clone()));
+                week_line.clear();
+            }
+        }
+
+        if !week_line.is_empty() {
+            lines.push(Line::from(week_line));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!("Selected: {}", selected_date.format("%Y-%m-%d %a"))));
+
+        lines
+    }
+
+    fn cancel_date_input(&mut self) -> Result<()> {
+        if let Mode::DateInput { todo, .. } = &self.mode {
+            self.mode = Mode::Viewer {
+                todo: todo.clone(),
+                scroll: 0,
+            };
+        }
+        Ok(())
+    }
+
+    fn add_scheduled_date(&mut self, date: &str) -> Result<()> {
+        if let Mode::Viewer { todo, .. } = &self.mode {
+            let file_content = std::fs::read_to_string(&todo.file_path)?;
+            let lines: Vec<&str> = file_content.lines().collect();
+            let mut result = Vec::new();
+            let mut found = false;
+
+            let scheduled_line = format!("SCHEDULED: <{}>", date);
+
+            let mut i = 0;
+            while i < lines.len() {
+                let line = lines[i];
+
+                // Find the TODO line and add SCHEDULED after it
+                if !found && line.starts_with('*') && line.contains(&todo.keyword) && line.contains(&todo.title) {
+                    result.push(line);
+
+                    // Check if next line already has SCHEDULED
+                    let next_line = lines.get(i + 1).unwrap_or(&"");
+                    if next_line.contains("SCHEDULED:") {
+                        // Skip the old SCHEDULED line by incrementing i
+                        i += 1;
+                    }
+                    result.push(&scheduled_line);
+                    found = true;
+                } else {
+                    result.push(line);
+                }
+
+                i += 1;
+            }
+
+            std::fs::write(&todo.file_path, result.join("\n"))?;
+
+            // Reload
+            let todos = Self::extract_all_todos(&self.directory)?;
+            if let Some(updated) = todos.iter().find(|t| t.title == todo.title && t.file_path == todo.file_path) {
+                self.mode = Mode::Viewer {
+                    todo: updated.clone(),
+                    scroll: 0,
+                };
+            }
+        }
+        Ok(())
+    }
+
+    fn add_deadline_date(&mut self, date: &str) -> Result<()> {
+        if let Mode::Viewer { todo, .. } = &self.mode {
+            let file_content = std::fs::read_to_string(&todo.file_path)?;
+            let lines: Vec<&str> = file_content.lines().collect();
+            let mut result = Vec::new();
+            let mut found = false;
+
+            let deadline_line = format!("DEADLINE: <{}>", date);
+
+            let mut i = 0;
+            while i < lines.len() {
+                let line = lines[i];
+
+                // Find the TODO line and add DEADLINE after it
+                if !found && line.starts_with('*') && line.contains(&todo.keyword) && line.contains(&todo.title) {
+                    result.push(line);
+
+                    // Check if next line already has DEADLINE
+                    let next_line = lines.get(i + 1).unwrap_or(&"");
+                    if next_line.contains("DEADLINE:") {
+                        // Skip the old DEADLINE line by incrementing i
+                        i += 1;
+                    }
+                    result.push(&deadline_line);
+                    found = true;
+                } else {
+                    result.push(line);
+                }
+
+                i += 1;
+            }
+
+            std::fs::write(&todo.file_path, result.join("\n"))?;
+
+            // Reload
+            let todos = Self::extract_all_todos(&self.directory)?;
+            if let Some(updated) = todos.iter().find(|t| t.title == todo.title && t.file_path == todo.file_path) {
+                self.mode = Mode::Viewer {
+                    todo: updated.clone(),
+                    scroll: 0,
+                };
+            }
+        }
+        Ok(())
+    }
+
     fn exit_edit_mode_with_save(&mut self) -> Result<()> {
         // Extract data from Editor mode first
         let (todo_clone, new_content) = if let Mode::Editor { todo, textarea } = &self.mode {
@@ -401,10 +767,27 @@ fn run_app<B: ratatui::backend::Backend>(
                     f.render_widget(content, chunks[0]);
 
                     let status_text = format!(
-                        "File: {} | ↑/↓: Scroll | e: Edit | Esc: Back | q: Quit",
-                        todo.file_path.display()
+                        "t: Toggle TODO/DONE | s: Schedule | D: Deadline | e: Edit | Esc: Back | q: Quit"
                     );
                     let status = Paragraph::new(status_text)
+                        .block(Block::default().borders(Borders::ALL))
+                        .style(Style::default().fg(Color::Gray));
+                    f.render_widget(status, chunks[1]);
+                }
+                Mode::DateInput { input_type, selected_date, viewing_month, .. } => {
+                    let title = match input_type {
+                        DateInputType::Scheduled => "Select SCHEDULED Date",
+                        DateInputType::Deadline => "Select DEADLINE Date",
+                    };
+
+                    // Render calendar
+                    let calendar_lines = App::render_calendar(*viewing_month, *selected_date);
+                    let calendar_widget = Paragraph::new(calendar_lines)
+                        .block(Block::default().borders(Borders::ALL).title(title))
+                        .style(Style::default());
+                    f.render_widget(calendar_widget, chunks[0]);
+
+                    let status = Paragraph::new("Arrows: Navigate | </> or Page Up/Down: Change Month | Enter: Confirm | Esc: Cancel")
                         .block(Block::default().borders(Borders::ALL))
                         .style(Style::default().fg(Color::Gray));
                     f.render_widget(status, chunks[1]);
@@ -440,6 +823,15 @@ fn run_app<B: ratatui::backend::Backend>(
                 },
                 Mode::Viewer { scroll, .. } => match key.code {
                     KeyCode::Char('q') => return Ok(()),
+                    KeyCode::Char('t') => {
+                        app.toggle_todo_state()?;
+                    }
+                    KeyCode::Char('s') => {
+                        app.enter_date_input(DateInputType::Scheduled)?;
+                    }
+                    KeyCode::Char('D') => {
+                        app.enter_date_input(DateInputType::Deadline)?;
+                    }
                     KeyCode::Char('e') => {
                         app.enter_edit_mode()?;
                     }
@@ -451,6 +843,33 @@ fn run_app<B: ratatui::backend::Backend>(
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
                         *scroll = scroll.saturating_add(1);
+                    }
+                    _ => {}
+                },
+                Mode::DateInput { .. } => match key.code {
+                    KeyCode::Enter => {
+                        app.submit_date_input()?;
+                    }
+                    KeyCode::Esc => {
+                        app.cancel_date_input()?;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        app.calendar_move_day(-7);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        app.calendar_move_day(7);
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        app.calendar_move_day(-1);
+                    }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        app.calendar_move_day(1);
+                    }
+                    KeyCode::Char('<') | KeyCode::PageUp => {
+                        app.calendar_change_month(-1);
+                    }
+                    KeyCode::Char('>') | KeyCode::PageDown => {
+                        app.calendar_change_month(1);
                     }
                     _ => {}
                 },

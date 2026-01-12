@@ -15,7 +15,13 @@ This approach is inspired by tools like Logseq and Roam Research, where blocks/e
 - **Built-in Editor**: Edit TODO entries directly in the TUI
   - Full text editing with standard keyboard controls
   - Save changes back to the original org file
-  - Cancel editing without saving
+  - Auto-save on exit
+- **Quick Actions**:
+  - Toggle TODO ↔ DONE with a single key (`t`)
+  - Add SCHEDULED dates with visual calendar picker (`s`)
+  - Add DEADLINE dates with visual calendar picker (`D`)
+  - No manual date typing - use arrow keys to navigate!
+  - All changes save directly to your org files
 - **TODO States**: Color-coded TODO/DONE/NEXT/WAITING keywords
   - TODO: Red
   - DONE: Green
@@ -52,7 +58,13 @@ cargo run -- /path/to/org/directory
 cargo run -- ~/Library/Mobile\ Documents/iCloud~com~appsonthemove~beorg/Documents/org/
 ```
 
-This will scan all `.org` files in the directory and extract all TODO entries, presenting them in a unified list regardless of which file they're in.
+This will **recursively scan all `.org` files** in the directory and all subdirectories (up to 5 levels deep), extracting all TODO entries and presenting them in a unified list regardless of which file or folder they're in.
+
+**Smart Scanning:**
+- Automatically skips hidden directories (starting with `.`)
+- Skips common large directories (`node_modules`, `target`, `.git`, etc.)
+- Won't hang even if pointed at large directory trees
+- Safe to use in your home directory with org files nested in various projects
 
 ## Keyboard Controls
 
@@ -63,9 +75,21 @@ This will scan all `.org` files in the directory and extract all TODO entries, p
 
 ### Viewer Mode (TODO Entry View)
 - `↑`/`↓` or `k`/`j`: Scroll through entry content
+- `t`: Toggle between TODO and DONE states
+- `s`: Add/update SCHEDULED date
+- `D` (Shift+d): Add/update DEADLINE date
 - `e`: Enter edit mode
 - `Esc`: Back to TODO list
 - `q`: Quit
+
+### Date Input Mode (Calendar Picker)
+- **Visual calendar** showing current month
+- `←/→` or `h`/`l`: Move day by day
+- `↑/↓` or `k`/`j`: Move week by week
+- `<`/`>` or `Page Up`/`Page Down`: Change month
+- `Enter`: Confirm selected date
+- `Esc`: Cancel without saving
+- Selected date shown as `[DD]`, today marked with `*`
 
 ### Editor Mode (Editing TODO Entry)
 - Normal text editing keys (arrows, backspace, delete, etc.)
@@ -103,7 +127,7 @@ This will show all TODO entries from `inbox.org` and any other org files in that
 ## Architecture
 
 OrgStand demonstrates that you can work with org files without Emacs by:
-1. Scanning directories for `.org` files
+1. Recursively scanning directories and subdirectories for all `.org` files
 2. Parsing each file to extract TODO entries with their full content
 3. Presenting entries in a flat, file-agnostic view
 4. Using `ratatui` for the TUI interface
