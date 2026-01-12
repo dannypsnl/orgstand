@@ -1,0 +1,11 @@
+[package]
+name = "orgstand"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+orgize = "0.9"
+ratatui = "0.28"
+crossterm = "0.28"
+anyhow = "1.0"
+tui-textarea = "0.6"
