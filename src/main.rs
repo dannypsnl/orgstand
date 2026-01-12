@@ -767,7 +767,7 @@ fn run_app<B: ratatui::backend::Backend>(
                     f.render_widget(content, chunks[0]);
 
                     let status_text = format!(
-                        "t: Toggle TODO/DONE | s: Schedule | D: Deadline | e: Edit | Esc: Back | q: Quit"
+                        "t: Toggle TODO/DONE | s: Schedule | d: Deadline | e: Edit | Esc: Back | q: Quit"
                     );
                     let status = Paragraph::new(status_text)
                         .block(Block::default().borders(Borders::ALL))
@@ -829,7 +829,7 @@ fn run_app<B: ratatui::backend::Backend>(
                     KeyCode::Char('s') => {
                         app.enter_date_input(DateInputType::Scheduled)?;
                     }
-                    KeyCode::Char('D') => {
+                    KeyCode::Char('d') => {
                         app.enter_date_input(DateInputType::Deadline)?;
                     }
                     KeyCode::Char('e') => {

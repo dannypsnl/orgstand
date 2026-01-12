@@ -19,7 +19,7 @@ This approach is inspired by tools like Logseq and Roam Research, where blocks/e
 - **Quick Actions**:
   - Toggle TODO ↔ DONE with a single key (`t`)
   - Add SCHEDULED dates with visual calendar picker (`s`)
-  - Add DEADLINE dates with visual calendar picker (`D`)
+  - Add DEADLINE dates with visual calendar picker (`d`)
   - No manual date typing - use arrow keys to navigate!
   - All changes save directly to your org files
 - **TODO States**: Color-coded TODO/DONE/NEXT/WAITING keywords
@@ -77,7 +77,7 @@ This will **recursively scan all `.org` files** in the directory and all subdire
 - `↑`/`↓` or `k`/`j`: Scroll through entry content
 - `t`: Toggle between TODO and DONE states
 - `s`: Add/update SCHEDULED date
-- `D` (Shift+d): Add/update DEADLINE date
+- `d`: Add/update DEADLINE date
 - `e`: Enter edit mode
 - `Esc`: Back to TODO list
 - `q`: Quit
