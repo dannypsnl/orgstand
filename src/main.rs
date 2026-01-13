@@ -1342,9 +1342,16 @@ fn run_app<B: ratatui::backend::Backend>(
                                 String::new()
                             };
 
+                            // Don't show empty brackets for Notes without keywords
+                            let keyword_part = if todo.keyword.is_empty() {
+                                String::new()
+                            } else {
+                                format!("[{}] ", todo.keyword)
+                            };
+
                             let display = format!(
-                                "[{}] {}{}{}  - {}",
-                                todo.keyword,
+                                "{}{}{}{}  - {}",
+                                keyword_part,
                                 todo.title,
                                 tags_str,
                                 date_str,
