@@ -202,46 +202,51 @@ impl App {
                     if parts.len() >= 2 {
                         let potential_keyword = parts[1];
 
-                        // Check if it's a TODO keyword
-                        if matches!(
+                        let (keyword, title, tags) = if matches!(
                             potential_keyword,
                             "TODO" | "DONE" | "NEXT" | "WAITING" | "CANCELLED" | "CANCELED"
                         ) {
+                            // It has a TODO keyword
                             let keyword = potential_keyword.to_string();
-
-                            // Extract title and tags
                             let rest = parts.get(2).unwrap_or(&"");
                             let (title, tags) = Self::parse_title_and_tags(rest);
+                            (keyword, title, tags)
+                        } else {
+                            // It's a Note without a keyword
+                            // The title starts from parts[1] (after the stars)
+                            let rest = &line[stars.len()..].trim_start();
+                            let (title, tags) = Self::parse_title_and_tags(rest);
+                            (String::new(), title, tags)
+                        };
 
-                            // Extract content until next heading of same or higher level
-                            let mut entry_content = String::new();
-                            entry_content.push_str(line);
-                            entry_content.push('\n');
+                        // Extract content until next heading of same or higher level
+                        let mut entry_content = String::new();
+                        entry_content.push_str(line);
+                        entry_content.push('\n');
 
-                            let mut j = i + 1;
-                            while j < lines.len() {
-                                let next_line = lines[j];
-                                if next_line.starts_with('*') {
-                                    let next_level = next_line.chars().take_while(|c| *c == '*').count();
-                                    if next_level <= level {
-                                        break;
-                                    }
+                        let mut j = i + 1;
+                        while j < lines.len() {
+                            let next_line = lines[j];
+                            if next_line.starts_with('*') {
+                                let next_level = next_line.chars().take_while(|c| *c == '*').count();
+                                if next_level <= level {
+                                    break;
                                 }
-                                entry_content.push_str(next_line);
-                                entry_content.push('\n');
-                                j += 1;
                             }
-
-                            todos.push(TodoEntry {
-                                keyword,
-                                title,
-                                tags,
-                                file_path: file_path.to_path_buf(),
-                                content: entry_content,
-                                level,
-                            });
-                            break;
+                            entry_content.push_str(next_line);
+                            entry_content.push('\n');
+                            j += 1;
                         }
+
+                        todos.push(TodoEntry {
+                            keyword,
+                            title,
+                            tags,
+                            file_path: file_path.to_path_buf(),
+                            content: entry_content,
+                            level,
+                        });
+                        break;
                     }
                 }
             }
@@ -386,6 +391,7 @@ impl App {
         let mut filtered: Vec<TodoEntry> = match filter {
             ViewFilter::All => {
                 // In All view, filter out DONE items
+                // But keep Notes (items without keywords)
                 todos
                     .iter()
                     .filter(|todo| todo.keyword != "DONE")
@@ -397,24 +403,30 @@ impl App {
                 todos
                     .iter()
                     .filter(|todo| {
-                        // Show all entries scheduled for today, regardless of status
-                        // This includes TODO, DONE, and any other status
+                        // First check for SCHEDULED date
                         if let Some(scheduled_date) =
                             Self::parse_existing_date(&todo.content, &DateInputType::Scheduled)
                         {
-                            scheduled_date == today
-                        } else {
-                            false
+                            return scheduled_date == today;
                         }
+
+                        // If no SCHEDULED date, check for any date in the content
+                        if let Some(any_date) = Self::parse_any_date(&todo.content) {
+                            return any_date == today;
+                        }
+
+                        false
                     })
                     .cloned()
                     .collect()
             }
         };
 
-        // Sort by SCHEDULED date (earliest first)
+        // Sort by date (earliest first)
+        // First try SCHEDULED date, then fall back to any date
         filtered.sort_by_key(|todo| {
             Self::parse_existing_date(&todo.content, &DateInputType::Scheduled)
+                .or_else(|| Self::parse_any_date(&todo.content))
         });
 
         filtered
@@ -506,6 +518,31 @@ impl App {
                             }
                         }
                     }
+                }
+            }
+        }
+        None
+    }
+
+    fn parse_any_date(content: &str) -> Option<NaiveDate> {
+        // Parse any date in <YYYY-MM-DD ...> format, regardless of whether it has SCHEDULED: or DEADLINE:
+        for line in content.lines() {
+            let mut search_pos = 0;
+            while let Some(start_pos) = line[search_pos..].find('<') {
+                let actual_start = search_pos + start_pos;
+                if let Some(end_pos) = line[actual_start..].find('>') {
+                    let actual_end = actual_start + end_pos;
+                    let date_str = &line[actual_start + 1..actual_end];
+                    // Parse YYYY-MM-DD (ignore time and day of week)
+                    let parts: Vec<&str> = date_str.split_whitespace().collect();
+                    if let Some(date_part) = parts.first() {
+                        if let Ok(date) = NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
+                            return Some(date);
+                        }
+                    }
+                    search_pos = actual_end + 1;
+                } else {
+                    break;
                 }
             }
         }
