@@ -37,6 +37,7 @@ enum ViewFilter {
 enum DateInputType {
     Scheduled,
     Deadline,
+    Plain, // Direct date without SCHEDULED: or DEADLINE: prefix
 }
 
 enum Mode {
@@ -497,9 +498,15 @@ impl App {
     }
 
     fn parse_existing_date(content: &str, input_type: &DateInputType) -> Option<NaiveDate> {
+        // For Plain type, use parse_any_date
+        if matches!(input_type, DateInputType::Plain) {
+            return Self::parse_any_date(content);
+        }
+
         let keyword = match input_type {
             DateInputType::Scheduled => "SCHEDULED:",
             DateInputType::Deadline => "DEADLINE:",
+            DateInputType::Plain => unreachable!(),
         };
 
         // Look for lines containing the keyword
@@ -550,9 +557,15 @@ impl App {
     }
 
     fn parse_existing_time(content: &str, input_type: &DateInputType) -> (u32, u32) {
+        // For Plain type, parse any time
+        if matches!(input_type, DateInputType::Plain) {
+            return Self::parse_any_time(content);
+        }
+
         let keyword = match input_type {
             DateInputType::Scheduled => "SCHEDULED:",
             DateInputType::Deadline => "DEADLINE:",
+            DateInputType::Plain => unreachable!(),
         };
 
         // Look for lines containing the keyword
@@ -586,6 +599,40 @@ impl App {
         (0, 0)
     }
 
+    fn parse_any_time(content: &str) -> (u32, u32) {
+        // Parse any time from <YYYY-MM-DD Day HH:MM> format
+        for line in content.lines() {
+            let mut search_pos = 0;
+            while let Some(start_pos) = line[search_pos..].find('<') {
+                let actual_start = search_pos + start_pos;
+                if let Some(end_pos) = line[actual_start..].find('>') {
+                    let actual_end = actual_start + end_pos;
+                    let date_str = &line[actual_start + 1..actual_end];
+                    let parts: Vec<&str> = date_str.split_whitespace().collect();
+                    // Time is the third part (after date and day of week)
+                    if parts.len() >= 3 {
+                        if let Some(time_part) = parts.get(2) {
+                            let time_components: Vec<&str> = time_part.split(':').collect();
+                            if time_components.len() == 2 {
+                                if let (Ok(h), Ok(m)) = (
+                                    time_components[0].parse::<u32>(),
+                                    time_components[1].parse::<u32>(),
+                                ) {
+                                    return (h, m);
+                                }
+                            }
+                        }
+                    }
+                    search_pos = actual_end + 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        // Default to 00:00 if no time found
+        (0, 0)
+    }
+
     fn submit_date_input(&mut self) -> Result<()> {
         // Clone data first to avoid borrow conflicts
         let (todo_clone, input_type_clone, selected_date, hour, minute) = if let Mode::DateInput { todo, input_type, selected_date, hour, minute, .. } = &self.mode {
@@ -610,6 +657,9 @@ impl App {
             }
             DateInputType::Deadline => {
                 self.add_deadline_date(&date_str)?;
+            }
+            DateInputType::Plain => {
+                self.add_plain_date(&date_str)?;
             }
         }
 
@@ -812,6 +862,48 @@ impl App {
                         i += 1;
                     }
                     result.push(&deadline_line);
+                    found = true;
+                } else {
+                    result.push(line);
+                }
+
+                i += 1;
+            }
+
+            std::fs::write(&todo.file_path, result.join("\n"))?;
+
+            // Return to browser
+            self.back_to_browser()?;
+        }
+        Ok(())
+    }
+
+    fn add_plain_date(&mut self, date: &str) -> Result<()> {
+        if let Mode::Viewer { todo, .. } = &self.mode {
+            let file_content = std::fs::read_to_string(&todo.file_path)?;
+            let lines: Vec<&str> = file_content.lines().collect();
+            let mut result = Vec::new();
+            let mut found = false;
+
+            let plain_date_line = format!("<{}>", date);
+
+            let mut i = 0;
+            while i < lines.len() {
+                let line = lines[i];
+
+                // Find the TODO/Note line and add plain date after it
+                if !found && line.starts_with('*') && line.contains(&todo.title) {
+                    result.push(line);
+
+                    // Check if next line already has a plain date (no SCHEDULED: or DEADLINE: prefix)
+                    let next_line = lines.get(i + 1).unwrap_or(&"");
+                    let next_line_trimmed = next_line.trim();
+                    if next_line_trimmed.starts_with('<') && next_line_trimmed.ends_with('>')
+                        && !next_line.contains("SCHEDULED:") && !next_line.contains("DEADLINE:") {
+                        // Skip the old plain date line
+                        i += 1;
+                    }
+                    result.push(&plain_date_line);
                     found = true;
                 } else {
                     result.push(line);
@@ -1243,6 +1335,7 @@ fn run_app<B: ratatui::backend::Backend>(
                     let title = match input_type {
                         DateInputType::Scheduled => "Select SCHEDULED Date & Time",
                         DateInputType::Deadline => "Select DEADLINE Date & Time",
+                        DateInputType::Plain => "Select Date & Time (Plain)",
                     };
 
                     // Render calendar and time
@@ -1330,6 +1423,9 @@ fn run_app<B: ratatui::backend::Backend>(
                         KeyCode::Char('d') => {
                             app.enter_date_input_from_browser(DateInputType::Deadline)?;
                         }
+                        KeyCode::Char('p') => {
+                            app.enter_date_input_from_browser(DateInputType::Plain)?;
+                        }
                         KeyCode::Char('e') => {
                             app.enter_edit_mode_from_browser()?;
                         }
@@ -1358,6 +1454,9 @@ fn run_app<B: ratatui::backend::Backend>(
                     }
                     KeyCode::Char('d') => {
                         app.enter_date_input(DateInputType::Deadline)?;
+                    }
+                    KeyCode::Char('p') => {
+                        app.enter_date_input(DateInputType::Plain)?;
                     }
                     KeyCode::Char('e') => {
                         app.enter_edit_mode()?;
