@@ -1,6 +1,6 @@
 * TODO hello
 SCHEDULED: <2026-01-31 Sat 00:00>
-* TODO world
+* TODO world                                                 :tag1:tag2:tag3:
 SCHEDULED: <2026-01-13 Tue>
 :PROPERTIES:
 :CREATED: [2026-01-13 Tue 14:56:21]
@@ -13,7 +13,7 @@ SCHEDULED: <2026-01-13 Tue>
 :END:
 
 some random idea
-* TODO what's Torsion free module?
+* TODO what's Torsion free module?                                   :newtag:
 SCHEDULED: <2026-01-17 Sat 00:00>
 :PROPERTIES:
 :CREATED: [2026-01-13 Tue 17:20:31]

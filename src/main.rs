@@ -65,7 +65,9 @@ enum Mode {
     },
     TagManagement {
         todo: TodoEntry,
-        tag_input: TextArea<'static>,
+        tags: Vec<String>,
+        selected: usize,
+        editing: Option<TextArea<'static>>, // None = list mode, Some = editing a tag
     },
     QuickCapture {
         title_input: TextArea<'static>,
@@ -1200,31 +1202,23 @@ impl App {
 
     fn enter_tag_management(&mut self) -> Result<()> {
         if let Some(todo) = self.get_selected_todo_from_browser() {
-            let current_tags = todo.tags.join(" ");
-            let mut tag_input = TextArea::new(vec![current_tags]);
-            tag_input.set_block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!("Manage Tags for: {}", todo.title)),
-            );
-            self.mode = Mode::TagManagement { todo, tag_input };
+            let tags = todo.tags.clone();
+            self.mode = Mode::TagManagement {
+                todo,
+                tags,
+                selected: 0,
+                editing: None,
+            };
         }
         Ok(())
     }
 
     fn save_tags(&mut self) -> Result<()> {
-        let (todo_clone, new_tags_str) = if let Mode::TagManagement { todo, tag_input } = &self.mode {
-            let tags_str = tag_input.lines().join(" ");
-            (todo.clone(), tags_str)
+        let (todo_clone, new_tags) = if let Mode::TagManagement { todo, tags, .. } = &self.mode {
+            (todo.clone(), tags.clone())
         } else {
             return Ok(());
         };
-
-        // Parse new tags
-        let new_tags: Vec<String> = new_tags_str
-            .split_whitespace()
-            .map(|s| s.to_string())
-            .collect();
 
         // Update tags in the file
         self.update_tags_in_file(&todo_clone, &new_tags)?;
@@ -1475,14 +1469,65 @@ fn run_app<B: ratatui::backend::Backend>(
                         .style(Style::default().fg(Color::Yellow));
                     f.render_widget(status, chunks[1]);
                 }
-                Mode::TagManagement { tag_input, .. } => {
-                    // Tag management
-                    f.render_widget(tag_input, chunks[0]);
+                Mode::TagManagement { todo, tags, selected, editing } => {
+                    if let Some(textarea) = editing {
+                        // Editing a specific tag
+                        f.render_widget(textarea, chunks[0]);
+                        let status = Paragraph::new("Enter: Save tag | Esc: Cancel")
+                            .block(Block::default().borders(Borders::ALL))
+                            .style(Style::default().fg(Color::Cyan));
+                        f.render_widget(status, chunks[1]);
+                    } else {
+                        // List view
+                        if tags.is_empty() {
+                            // Show helpful message when no tags
+                            let help_text = vec![
+                                Line::from(""),
+                                Line::from(vec![
+                                    Span::styled("  No tags yet.", Style::default().fg(Color::Yellow)),
+                                ]),
+                                Line::from(""),
+                                Line::from(vec![
+                                    Span::styled("  Press 'a' to add a new tag!", Style::default().fg(Color::Cyan)),
+                                ]),
+                            ];
+                            let help = Paragraph::new(help_text).block(
+                                Block::default()
+                                    .borders(Borders::ALL)
+                                    .title(format!("Tags for: {}", todo.title)),
+                            );
+                            f.render_widget(help, chunks[0]);
+                        } else {
+                            let items: Vec<ListItem> = tags
+                                .iter()
+                                .enumerate()
+                                .map(|(i, tag)| {
+                                    let display = format!("  {}", tag);
+                                    let style = if i == *selected {
+                                        Style::default()
+                                            .fg(Color::Black)
+                                            .bg(Color::White)
+                                            .add_modifier(Modifier::BOLD)
+                                    } else {
+                                        Style::default()
+                                    };
+                                    ListItem::new(display).style(style)
+                                })
+                                .collect();
 
-                    let status = Paragraph::new("Enter: Save tags (space-separated) | Esc: Cancel | Type tags like: work urgent home")
-                        .block(Block::default().borders(Borders::ALL))
-                        .style(Style::default().fg(Color::Cyan));
-                    f.render_widget(status, chunks[1]);
+                            let list = List::new(items).block(
+                                Block::default()
+                                    .borders(Borders::ALL)
+                                    .title(format!("Tags for: {}", todo.title)),
+                            );
+                            f.render_widget(list, chunks[0]);
+                        }
+
+                        let status = Paragraph::new("↑/↓: Navigate | Enter: Edit tag | a: Add tag | x/Delete: Remove tag | Esc: Save & Exit")
+                            .block(Block::default().borders(Borders::ALL))
+                            .style(Style::default().fg(Color::Cyan));
+                        f.render_widget(status, chunks[1]);
+                    }
                 }
                 Mode::QuickCapture { title_input } => {
                     // Quick capture
@@ -1576,7 +1621,37 @@ fn run_app<B: ratatui::backend::Backend>(
             }
         })?;
 
-        if let Event::Key(key) = event::read()? {
+        let event = event::read()?;
+
+        // Handle mouse events for TagManagement
+        if let Event::Mouse(mouse_event) = event {
+            if let Mode::TagManagement { tags, selected, editing, .. } = &mut app.mode {
+                if editing.is_none() {  // Only in list mode
+                    use crossterm::event::MouseEventKind;
+                    if matches!(mouse_event.kind, MouseEventKind::Down(_)) {
+                        // Calculate which tag was clicked
+                        // The list starts at y=1 (after border), each item is on one line
+                        let click_y = mouse_event.row as usize;
+                        if click_y >= 2 && click_y < 2 + tags.len() {
+                            let clicked_index = click_y - 2;
+                            *selected = clicked_index;
+
+                            // Enter edit mode
+                            let current_tag = tags[clicked_index].clone();
+                            let mut textarea = TextArea::new(vec![current_tag]);
+                            textarea.set_block(
+                                Block::default()
+                                    .borders(Borders::ALL)
+                                    .title("Edit Tag"),
+                            );
+                            *editing = Some(textarea);
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Event::Key(key) = event {
             match &mut app.mode {
                 Mode::Browser { todos, selected, filter } => {
                     let filtered_len = App::filter_todos(todos, filter).len();
@@ -1723,17 +1798,76 @@ fn run_app<B: ratatui::backend::Backend>(
                         }
                     }
                 }
-                Mode::TagManagement { tag_input, .. } => {
-                    match key.code {
-                        KeyCode::Enter => {
-                            app.save_tags()?;
+                Mode::TagManagement { tags, selected, editing, .. } => {
+                    if let Some(textarea) = editing {
+                        // Editing mode
+                        match key.code {
+                            KeyCode::Enter => {
+                                // Save the edited tag
+                                let new_tag = textarea.lines().join("");
+                                if !new_tag.is_empty() {
+                                    tags[*selected] = new_tag;
+                                }
+                                *editing = None;
+                            }
+                            KeyCode::Esc => {
+                                // Cancel editing
+                                *editing = None;
+                            }
+                            _ => {
+                                textarea.input(key);
+                            }
                         }
-                        KeyCode::Esc => {
-                            app.back_to_browser()?;
-                        }
-                        _ => {
-                            // Pass all other keys to the tag input
-                            tag_input.input(key);
+                    } else {
+                        // List mode
+                        match key.code {
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                *selected = selected.saturating_sub(1);
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                if *selected < tags.len().saturating_sub(1) {
+                                    *selected += 1;
+                                }
+                            }
+                            KeyCode::Enter => {
+                                // Edit selected tag
+                                if *selected < tags.len() {
+                                    let current_tag = tags[*selected].clone();
+                                    let mut textarea = TextArea::new(vec![current_tag]);
+                                    textarea.set_block(
+                                        Block::default()
+                                            .borders(Borders::ALL)
+                                            .title("Edit Tag"),
+                                    );
+                                    *editing = Some(textarea);
+                                }
+                            }
+                            KeyCode::Char('a') | KeyCode::Char('n') => {
+                                // Add new tag
+                                tags.push(String::new());
+                                *selected = tags.len().saturating_sub(1);
+                                let mut textarea = TextArea::new(vec![String::new()]);
+                                textarea.set_block(
+                                    Block::default()
+                                        .borders(Borders::ALL)
+                                        .title("New Tag"),
+                                );
+                                *editing = Some(textarea);
+                            }
+                            KeyCode::Char('x') | KeyCode::Delete => {
+                                // Delete selected tag
+                                if *selected < tags.len() && !tags.is_empty() {
+                                    tags.remove(*selected);
+                                    if *selected >= tags.len() && !tags.is_empty() {
+                                        *selected = tags.len() - 1;
+                                    }
+                                }
+                            }
+                            KeyCode::Esc => {
+                                // Save and exit
+                                app.save_tags()?;
+                            }
+                            _ => {}
                         }
                     }
                 }
