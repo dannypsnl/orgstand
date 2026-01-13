@@ -1,5 +1,6 @@
-* TODO world                                               :yyy:xxx:test:ccc:
-SCHEDULED: <2026-01-13 Tue 22:50>
-DEADLINE: <2026-02-23 Mon>
-
 * TODO hello
+* TODO world
+SCHEDULED: <2026-01-13 Tue>
+:PROPERTIES:
+:CREATED: [2026-01-13 Tue 14:56:21]
+:END:

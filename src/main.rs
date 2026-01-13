@@ -66,6 +66,9 @@ enum Mode {
         todo: TodoEntry,
         tag_input: TextArea<'static>,
     },
+    QuickCapture {
+        title_input: TextArea<'static>,
+    },
 }
 
 struct App {
@@ -380,14 +383,22 @@ impl App {
     }
 
     fn filter_todos(todos: &[TodoEntry], filter: &ViewFilter) -> Vec<TodoEntry> {
-        match filter {
-            ViewFilter::All => todos.to_vec(),
+        let mut filtered: Vec<TodoEntry> = match filter {
+            ViewFilter::All => {
+                // In All view, filter out DONE items
+                todos
+                    .iter()
+                    .filter(|todo| todo.keyword != "DONE")
+                    .cloned()
+                    .collect()
+            }
             ViewFilter::Today => {
                 let today = Local::now().date_naive();
                 todos
                     .iter()
                     .filter(|todo| {
-                        // Check if the TODO has a SCHEDULED date matching today
+                        // Show all entries scheduled for today, regardless of status
+                        // This includes TODO, DONE, and any other status
                         if let Some(scheduled_date) =
                             Self::parse_existing_date(&todo.content, &DateInputType::Scheduled)
                         {
@@ -399,7 +410,14 @@ impl App {
                     .cloned()
                     .collect()
             }
-        }
+        };
+
+        // Sort by SCHEDULED date (earliest first)
+        filtered.sort_by_key(|todo| {
+            Self::parse_existing_date(&todo.content, &DateInputType::Scheduled)
+        });
+
+        filtered
     }
 
     fn toggle_view_filter(&mut self) {
@@ -894,18 +912,68 @@ impl App {
         Ok(())
     }
 
-    fn create_new_todo(&mut self) -> Result<()> {
-        // For now, create a simple TODO entry in inbox.org
+    fn create_new_note(&mut self) -> Result<()> {
+        // Create a simple note (not TODO) in inbox.org
         let inbox_path = self.directory.join("inbox.org");
 
-        // Create a basic TODO entry with timestamp
+        // Create a basic note entry with timestamp
         let now = Local::now();
         let new_entry = format!(
-            "\n* TODO New Task\n:PROPERTIES:\n:CREATED: [{}]\n:END:\n",
+            "\n* New Note\n:PROPERTIES:\n:CREATED: [{}]\n:END:\n",
             now.format("%Y-%m-%d %a %H:%M:%S")
         );
 
         // Append to inbox.org (create if doesn't exist)
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&inbox_path)?;
+        file.write_all(new_entry.as_bytes())?;
+
+        // Refresh browser
+        self.back_to_browser()?;
+        Ok(())
+    }
+
+    fn enter_quick_capture(&mut self) -> Result<()> {
+        let mut title_input = TextArea::new(vec![String::new()]);
+        title_input.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Quick Capture - Enter title (will be scheduled for today)"),
+        );
+        self.mode = Mode::QuickCapture { title_input };
+        Ok(())
+    }
+
+    fn save_quick_capture(&mut self) -> Result<()> {
+        let title = if let Mode::QuickCapture { title_input } = &self.mode {
+            title_input.lines().join(" ").trim().to_string()
+        } else {
+            return Ok(());
+        };
+
+        if title.is_empty() {
+            // Don't create empty entries
+            self.back_to_browser()?;
+            return Ok(());
+        }
+
+        // Create a TODO entry scheduled for today in inbox.org
+        let inbox_path = self.directory.join("inbox.org");
+        let now = Local::now();
+        let today = now.date_naive();
+
+        let new_entry = format!(
+            "\n* TODO {}\nSCHEDULED: <{}>\n:PROPERTIES:\n:CREATED: [{}]\n:END:\n",
+            title,
+            today.format("%Y-%m-%d %a"),
+            now.format("%Y-%m-%d %a %H:%M:%S")
+        );
+
+        // Append to inbox.org
         use std::fs::OpenOptions;
         use std::io::Write;
         let mut file = OpenOptions::new()
@@ -1100,7 +1168,7 @@ fn run_app<B: ratatui::backend::Backend>(
                     );
                     f.render_widget(list, chunks[0]);
 
-                    let status = Paragraph::new("↑/↓: Navigate | Enter: View | t: Toggle | s: Schedule | d: Deadline | e: Edit | g: Tags | n: New | x: Delete | Tab: View Mode | q: Quit")
+                    let status = Paragraph::new("↑/↓: Navigate | Enter: View | t: Toggle | s: Schedule | d: Deadline | e: Edit | g: Tags | c: Capture | n: Note | x: Delete | Tab: View | q: Quit")
                         .block(Block::default().borders(Borders::ALL))
                         .style(Style::default().fg(Color::Gray));
                     f.render_widget(status, chunks[1]);
@@ -1184,6 +1252,15 @@ fn run_app<B: ratatui::backend::Backend>(
                         .style(Style::default().fg(Color::Cyan));
                     f.render_widget(status, chunks[1]);
                 }
+                Mode::QuickCapture { title_input } => {
+                    // Quick capture
+                    f.render_widget(title_input, chunks[0]);
+
+                    let status = Paragraph::new("Enter: Create TODO scheduled for today | Esc: Cancel | Type the task title")
+                        .block(Block::default().borders(Borders::ALL))
+                        .style(Style::default().fg(Color::Green));
+                    f.render_widget(status, chunks[1]);
+                }
             }
         })?;
 
@@ -1222,11 +1299,14 @@ fn run_app<B: ratatui::backend::Backend>(
                         KeyCode::Char('g') => {
                             app.enter_tag_management()?;
                         }
-                        KeyCode::Char('x') | KeyCode::Delete => {
-                            app.delete_todo_from_browser()?;
+                        KeyCode::Char('c') => {
+                            app.enter_quick_capture()?;
                         }
                         KeyCode::Char('n') => {
-                            app.create_new_todo()?;
+                            app.create_new_note()?;
+                        }
+                        KeyCode::Char('x') | KeyCode::Delete => {
+                            app.delete_todo_from_browser()?;
                         }
                         _ => {}
                     }
@@ -1333,6 +1413,20 @@ fn run_app<B: ratatui::backend::Backend>(
                         _ => {
                             // Pass all other keys to the tag input
                             tag_input.input(key);
+                        }
+                    }
+                }
+                Mode::QuickCapture { title_input } => {
+                    match key.code {
+                        KeyCode::Enter => {
+                            app.save_quick_capture()?;
+                        }
+                        KeyCode::Esc => {
+                            app.back_to_browser()?;
+                        }
+                        _ => {
+                            // Pass all other keys to the title input
+                            title_input.input(key);
                         }
                     }
                 }
