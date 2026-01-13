@@ -62,6 +62,10 @@ enum Mode {
         minute: u32,
         editing_time: bool, // true if currently editing time, false if editing date
     },
+    TagManagement {
+        todo: TodoEntry,
+        tag_input: TextArea<'static>,
+    },
 }
 
 struct App {
@@ -245,29 +249,33 @@ impl App {
 
     fn parse_title_and_tags(text: &str) -> (String, Vec<String>) {
         // Tags are at the end in format :tag1:tag2:tag3:
+        // They are right-aligned with spaces before them
         let text = text.trim();
 
-        // Find the last occurrence of : to see if there are tags
-        if let Some(last_colon) = text.rfind(':') {
-            // Check if there's another colon before it (indicating tags)
-            let before_last = &text[..last_colon];
-            if let Some(second_last_colon) = before_last.rfind(':') {
-                // Extract tags part
-                let tags_part = &text[second_last_colon..];
-                let title_part = text[..second_last_colon].trim();
+        // Split from the right to get the last whitespace-separated token
+        // This handles the right-aligned tags with padding spaces
+        let parts: Vec<&str> = text.rsplitn(2, char::is_whitespace).collect();
 
-                // Parse tags
-                let tags: Vec<String> = tags_part
+        if parts.len() == 2 {
+            let potential_tags = parts[0].trim();
+            let potential_title = parts[1].trim();
+
+            // Check if this looks like tags: starts with : ends with : and has at least one more :
+            if potential_tags.starts_with(':')
+                && potential_tags.ends_with(':')
+                && potential_tags.matches(':').count() >= 2 {
+                // Parse the tags
+                let tags: Vec<String> = potential_tags
                     .split(':')
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_string())
                     .collect();
 
-                return (title_part.to_string(), tags);
+                return (potential_title.to_string(), tags);
             }
         }
 
-        // No tags found
+        // No valid tags found
         (text.to_string(), Vec::new())
     }
 
@@ -911,6 +919,85 @@ impl App {
         Ok(())
     }
 
+    fn enter_tag_management(&mut self) -> Result<()> {
+        if let Some(todo) = self.get_selected_todo_from_browser() {
+            let current_tags = todo.tags.join(" ");
+            let mut tag_input = TextArea::new(vec![current_tags]);
+            tag_input.set_block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!("Manage Tags for: {}", todo.title)),
+            );
+            self.mode = Mode::TagManagement { todo, tag_input };
+        }
+        Ok(())
+    }
+
+    fn save_tags(&mut self) -> Result<()> {
+        let (todo_clone, new_tags_str) = if let Mode::TagManagement { todo, tag_input } = &self.mode {
+            let tags_str = tag_input.lines().join(" ");
+            (todo.clone(), tags_str)
+        } else {
+            return Ok(());
+        };
+
+        // Parse new tags
+        let new_tags: Vec<String> = new_tags_str
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect();
+
+        // Update tags in the file
+        self.update_tags_in_file(&todo_clone, &new_tags)?;
+
+        // Return to browser
+        self.back_to_browser()?;
+        Ok(())
+    }
+
+    fn update_tags_in_file(&self, todo: &TodoEntry, new_tags: &[String]) -> Result<()> {
+        let file_content = std::fs::read_to_string(&todo.file_path)?;
+        let lines: Vec<&str> = file_content.lines().collect();
+        let mut result = Vec::new();
+
+        for line in lines.iter() {
+            // Find the matching TODO heading line
+            if line.starts_with('*') && line.contains(&todo.keyword) && line.contains(&todo.title) {
+                // Reconstruct the line with new tags
+                let stars = "*".repeat(todo.level);
+
+                // Format: * KEYWORD TITLE + padding + :tag1:tag2:
+                // Tags should be right-aligned at column 77 (org-mode standard)
+                let base = format!("{} {} {}", stars, todo.keyword, todo.title);
+
+                let new_line = if !new_tags.is_empty() {
+                    let tags_str = format!(":{}:", new_tags.join(":"));
+                    let target_col = 77;
+                    let current_len = base.len();
+                    let tags_len = tags_str.len();
+
+                    // Calculate padding needed
+                    let padding = if current_len + 1 + tags_len <= target_col {
+                        target_col - current_len - tags_len
+                    } else {
+                        1 // At least one space
+                    };
+
+                    format!("{}{}{}", base, " ".repeat(padding), tags_str)
+                } else {
+                    base
+                };
+
+                result.push(new_line);
+            } else {
+                result.push(line.to_string());
+            }
+        }
+
+        std::fs::write(&todo.file_path, result.join("\n"))?;
+        Ok(())
+    }
+
 }
 
 fn main() -> Result<()> {
@@ -1013,7 +1100,7 @@ fn run_app<B: ratatui::backend::Backend>(
                     );
                     f.render_widget(list, chunks[0]);
 
-                    let status = Paragraph::new("↑/↓: Navigate | Enter: View | t: Toggle | s: Schedule | d: Deadline | e: Edit | n: New | x: Delete | Tab: View Mode | q: Quit")
+                    let status = Paragraph::new("↑/↓: Navigate | Enter: View | t: Toggle | s: Schedule | d: Deadline | e: Edit | g: Tags | n: New | x: Delete | Tab: View Mode | q: Quit")
                         .block(Block::default().borders(Borders::ALL))
                         .style(Style::default().fg(Color::Gray));
                     f.render_widget(status, chunks[1]);
@@ -1088,6 +1175,15 @@ fn run_app<B: ratatui::backend::Backend>(
                         .style(Style::default().fg(Color::Yellow));
                     f.render_widget(status, chunks[1]);
                 }
+                Mode::TagManagement { tag_input, .. } => {
+                    // Tag management
+                    f.render_widget(tag_input, chunks[0]);
+
+                    let status = Paragraph::new("Enter: Save tags (space-separated) | Esc: Cancel | Type tags like: work urgent home")
+                        .block(Block::default().borders(Borders::ALL))
+                        .style(Style::default().fg(Color::Cyan));
+                    f.render_widget(status, chunks[1]);
+                }
             }
         })?;
 
@@ -1122,6 +1218,9 @@ fn run_app<B: ratatui::backend::Backend>(
                         }
                         KeyCode::Char('e') => {
                             app.enter_edit_mode_from_browser()?;
+                        }
+                        KeyCode::Char('g') => {
+                            app.enter_tag_management()?;
                         }
                         KeyCode::Char('x') | KeyCode::Delete => {
                             app.delete_todo_from_browser()?;
@@ -1220,6 +1319,20 @@ fn run_app<B: ratatui::backend::Backend>(
                         _ => {
                             // Pass all other keys to the textarea
                             textarea.input(key);
+                        }
+                    }
+                }
+                Mode::TagManagement { tag_input, .. } => {
+                    match key.code {
+                        KeyCode::Enter => {
+                            app.save_tags()?;
+                        }
+                        KeyCode::Esc => {
+                            app.back_to_browser()?;
+                        }
+                        _ => {
+                            // Pass all other keys to the tag input
+                            tag_input.input(key);
                         }
                     }
                 }
