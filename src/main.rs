@@ -20,7 +20,8 @@ use tui_textarea::TextArea;
 #[derive(Clone)]
 struct TodoEntry {
     keyword: String,      // TODO, DONE, etc.
-    title: String,        // The title text
+    title: String,        // The title text (without tags)
+    tags: Vec<String>,    // Tags from the heading
     file_path: PathBuf,   // Which file it's in
     content: String,      // Full content of this entry (including children)
     level: usize,
@@ -168,67 +169,106 @@ impl App {
     }
 
     fn extract_todos_from_content(content: &str, file_path: &Path) -> Vec<TodoEntry> {
+        use orgize::Org;
+
         let mut todos = Vec::new();
+        let org = Org::parse(content);
 
-        // Split by lines and find TODO entries
-        let lines: Vec<&str> = content.lines().collect();
-        let mut i = 0;
+        // Use orgize to parse headlines
+        for headline in org.headlines() {
+            let title_obj = headline.title(&org);
+            let title_raw = title_obj.raw.to_string();
 
-        while i < lines.len() {
-            let line = lines[i];
+            // Check if it has a TODO keyword
+            // In orgize, we need to check the original line for the keyword
+            // The title.raw contains just the title without keyword
+            let lines: Vec<&str> = content.lines().collect();
 
-            // Check if this line is a heading with TODO keyword
-            if line.starts_with('*') {
-                let parts: Vec<&str> = line.splitn(3, ' ').collect();
-                if parts.len() >= 3 {
-                    let stars = parts[0];
-                    let potential_keyword = parts[1];
+            // Find the line that starts with the right number of stars and contains our title
+            let level = headline.level();
+            let stars = "*".repeat(level);
 
-                    // Check if it's a TODO keyword
-                    if matches!(
-                        potential_keyword,
-                        "TODO" | "DONE" | "NEXT" | "WAITING" | "CANCELLED" | "CANCELED"
-                    ) {
-                        let level = stars.chars().count();
-                        let keyword = potential_keyword.to_string();
-                        let title = parts[2].to_string();
+            for (i, line) in lines.iter().enumerate() {
+                if line.starts_with(&stars) && line.contains(title_raw.as_str()) {
+                    // Parse the heading line
+                    let parts: Vec<&str> = line.splitn(3, ' ').collect();
+                    if parts.len() >= 2 {
+                        let potential_keyword = parts[1];
 
-                        // Extract content until next heading of same or higher level
-                        let mut content = String::new();
-                        content.push_str(line);
-                        content.push('\n');
+                        // Check if it's a TODO keyword
+                        if matches!(
+                            potential_keyword,
+                            "TODO" | "DONE" | "NEXT" | "WAITING" | "CANCELLED" | "CANCELED"
+                        ) {
+                            let keyword = potential_keyword.to_string();
 
-                        let mut j = i + 1;
-                        while j < lines.len() {
-                            let next_line = lines[j];
-                            if next_line.starts_with('*') {
-                                let next_level = next_line.chars().take_while(|c| *c == '*').count();
-                                if next_level <= level {
-                                    break; // Found next section at same or higher level
+                            // Extract title and tags
+                            let rest = parts.get(2).unwrap_or(&"");
+                            let (title, tags) = Self::parse_title_and_tags(rest);
+
+                            // Extract content until next heading of same or higher level
+                            let mut entry_content = String::new();
+                            entry_content.push_str(line);
+                            entry_content.push('\n');
+
+                            let mut j = i + 1;
+                            while j < lines.len() {
+                                let next_line = lines[j];
+                                if next_line.starts_with('*') {
+                                    let next_level = next_line.chars().take_while(|c| *c == '*').count();
+                                    if next_level <= level {
+                                        break;
+                                    }
                                 }
+                                entry_content.push_str(next_line);
+                                entry_content.push('\n');
+                                j += 1;
                             }
-                            content.push_str(next_line);
-                            content.push('\n');
-                            j += 1;
+
+                            todos.push(TodoEntry {
+                                keyword,
+                                title,
+                                tags,
+                                file_path: file_path.to_path_buf(),
+                                content: entry_content,
+                                level,
+                            });
+                            break;
                         }
-
-                        todos.push(TodoEntry {
-                            keyword,
-                            title,
-                            file_path: file_path.to_path_buf(),
-                            content,
-                            level,
-                        });
-
-                        i = j; // Skip to next section
-                        continue;
                     }
                 }
             }
-            i += 1;
         }
 
         todos
+    }
+
+    fn parse_title_and_tags(text: &str) -> (String, Vec<String>) {
+        // Tags are at the end in format :tag1:tag2:tag3:
+        let text = text.trim();
+
+        // Find the last occurrence of : to see if there are tags
+        if let Some(last_colon) = text.rfind(':') {
+            // Check if there's another colon before it (indicating tags)
+            let before_last = &text[..last_colon];
+            if let Some(second_last_colon) = before_last.rfind(':') {
+                // Extract tags part
+                let tags_part = &text[second_last_colon..];
+                let title_part = text[..second_last_colon].trim();
+
+                // Parse tags
+                let tags: Vec<String> = tags_part
+                    .split(':')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect();
+
+                return (title_part.to_string(), tags);
+            }
+        }
+
+        // No tags found
+        (text.to_string(), Vec::new())
     }
 
     fn open_todo(&mut self) -> Result<()> {
@@ -934,10 +974,17 @@ fn run_app<B: ratatui::backend::Backend>(
                                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
                             };
 
+                            let tags_str = if !todo.tags.is_empty() {
+                                format!(" :{}: ", todo.tags.join(":"))
+                            } else {
+                                String::new()
+                            };
+
                             let display = format!(
-                                "[{}] {} - {}",
+                                "[{}] {}{}  - {}",
                                 todo.keyword,
                                 todo.title,
+                                tags_str,
                                 todo.file_path.file_name().unwrap().to_string_lossy()
                             );
 
