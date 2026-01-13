@@ -391,11 +391,11 @@ impl App {
     fn filter_todos(todos: &[TodoEntry], filter: &ViewFilter) -> Vec<TodoEntry> {
         let mut filtered: Vec<TodoEntry> = match filter {
             ViewFilter::All => {
-                // In All view, filter out DONE items
-                // But keep Notes (items without keywords)
+                // In All view, only show TODO entries (with keywords)
+                // Filter out DONE items and Notes (items without keywords)
                 todos
                     .iter()
-                    .filter(|todo| todo.keyword != "DONE")
+                    .filter(|todo| !todo.keyword.is_empty() && todo.keyword != "DONE")
                     .cloned()
                     .collect()
             }
@@ -631,6 +631,56 @@ impl App {
         }
         // Default to 00:00 if no time found
         (0, 0)
+    }
+
+    fn format_date_distance(date: NaiveDate) -> String {
+        let today = Local::now().date_naive();
+        let days_diff = (date - today).num_days();
+
+        match days_diff {
+            0 => "Today".to_string(),
+            1 => "Tmrw".to_string(),
+            -1 => "Yday".to_string(),
+            d if d > 0 => {
+                // Future dates
+                if d <= 6 {
+                    format!("+{}d", d)
+                } else if d <= 30 {
+                    let weeks = d / 7;
+                    format!("+{}W", weeks)
+                } else {
+                    let months = d / 30;
+                    format!("+{}M", months)
+                }
+            }
+            d => {
+                // Past dates
+                let abs_d = d.abs();
+                if abs_d <= 6 {
+                    format!("-{}d", abs_d)
+                } else if abs_d <= 30 {
+                    let weeks = abs_d / 7;
+                    format!("-{}W", weeks)
+                } else {
+                    let months = abs_d / 30;
+                    format!("-{}M", months)
+                }
+            }
+        }
+    }
+
+    fn get_display_date(todo: &TodoEntry) -> Option<(NaiveDate, String)> {
+        // Priority: SCHEDULED > DEADLINE > Plain date
+        if let Some(date) = Self::parse_existing_date(&todo.content, &DateInputType::Scheduled) {
+            return Some((date, "S".to_string()));
+        }
+        if let Some(date) = Self::parse_existing_date(&todo.content, &DateInputType::Deadline) {
+            return Some((date, "D".to_string()));
+        }
+        if let Some(date) = Self::parse_any_date(&todo.content) {
+            return Some((date, "P".to_string()));
+        }
+        None
     }
 
     fn submit_date_input(&mut self) -> Result<()> {
@@ -1264,11 +1314,20 @@ fn run_app<B: ratatui::backend::Backend>(
                                 String::new()
                             };
 
+                            // Get date and format distance
+                            let date_str = if let Some((date, date_type)) = App::get_display_date(todo) {
+                                let distance = App::format_date_distance(date);
+                                format!(" [{}:{}]", date_type, distance)
+                            } else {
+                                String::new()
+                            };
+
                             let display = format!(
-                                "[{}] {}{}  - {}",
+                                "[{}] {}{}{}  - {}",
                                 todo.keyword,
                                 todo.title,
                                 tags_str,
+                                date_str,
                                 todo.file_path.file_name().unwrap().to_string_lossy()
                             );
 
