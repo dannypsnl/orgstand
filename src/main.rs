@@ -669,18 +669,34 @@ impl App {
         }
     }
 
-    fn get_display_date(todo: &TodoEntry) -> Option<(NaiveDate, String)> {
-        // Priority: SCHEDULED > DEADLINE > Plain date
-        if let Some(date) = Self::parse_existing_date(&todo.content, &DateInputType::Scheduled) {
-            return Some((date, "S".to_string()));
+    fn get_display_date(todo: &TodoEntry) -> Option<NaiveDate> {
+        // Get the nearest date from all date types
+        let scheduled = Self::parse_existing_date(&todo.content, &DateInputType::Scheduled);
+        let deadline = Self::parse_existing_date(&todo.content, &DateInputType::Deadline);
+        let plain = Self::parse_any_date(&todo.content);
+
+        let today = Local::now().date_naive();
+
+        // Collect all dates and find the nearest one to today
+        let mut dates = Vec::new();
+        if let Some(d) = scheduled {
+            dates.push(d);
         }
-        if let Some(date) = Self::parse_existing_date(&todo.content, &DateInputType::Deadline) {
-            return Some((date, "D".to_string()));
+        if let Some(d) = deadline {
+            dates.push(d);
         }
-        if let Some(date) = Self::parse_any_date(&todo.content) {
-            return Some((date, "P".to_string()));
+        if let Some(d) = plain {
+            dates.push(d);
         }
-        None
+
+        if dates.is_empty() {
+            return None;
+        }
+
+        // Find the date with minimum absolute difference from today
+        dates.into_iter().min_by_key(|date| {
+            (*date - today).num_days().abs()
+        })
     }
 
     fn submit_date_input(&mut self) -> Result<()> {
@@ -1314,10 +1330,14 @@ fn run_app<B: ratatui::backend::Backend>(
                                 String::new()
                             };
 
-                            // Get date and format distance
-                            let date_str = if let Some((date, date_type)) = App::get_display_date(todo) {
-                                let distance = App::format_date_distance(date);
-                                format!(" [{}:{}]", date_type, distance)
+                            // Get date and format distance (only for All TODOs view)
+                            let date_str = if matches!(filter, ViewFilter::All) {
+                                if let Some(date) = App::get_display_date(todo) {
+                                    let distance = App::format_date_distance(date);
+                                    format!(" [{}]", distance)
+                                } else {
+                                    String::new()
+                                }
                             } else {
                                 String::new()
                             };
