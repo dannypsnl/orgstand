@@ -1,40 +1,72 @@
 # OrgStand
 
-A terminal-based TODO entry manager for org-mode files, written in Rust. Unlike traditional org-mode viewers that work with files, OrgStand focuses on **TODO entries** as the primary unit, making it easy to browse and manage tasks across multiple org files.
+A powerful terminal-based TODO and agenda manager for org-mode files, written in Rust. OrgStand focuses on **TODO entries and notes** as the primary unit, making it easy to browse and manage tasks across multiple org files.
 
 ## Philosophy
 
-OrgStand ignores file structure and presents all TODO entries from your org files in a flat list. When you focus on a TODO entry, it opens in a dedicated view where you can see its full content including sub-tasks, properties, and metadata.
+OrgStand presents all TODO entries and notes from your org files in intelligent views. When you focus on an entry, it opens in a dedicated view where you can see its full content, edit it, manage dates, and organize tags.
 
-This approach is inspired by tools like Logseq and Roam Research, where blocks/entries are first-class citizens rather than files.
+This approach is inspired by tools like Logseq and Roam Research, where entries are first-class citizens rather than files.
 
 ## Features
 
-- **TODO-Centric Browser**: Browse all TODO entries across multiple org files in one view
-- **Entry-Focused Viewer**: View complete TODO entries with all their content
-- **Built-in Editor**: Edit TODO entries directly in the TUI
-  - Full text editing with standard keyboard controls
-  - Save changes back to the original org file
-  - Auto-save on exit
-- **Quick Actions**:
-  - Toggle TODO ↔ DONE with a single key (`t`)
-  - Add SCHEDULED dates with visual calendar picker (`s`)
-  - Add DEADLINE dates with visual calendar picker (`d`)
-  - No manual date typing - use arrow keys to navigate!
-  - All changes save directly to your org files
-- **TODO States**: Color-coded TODO/DONE/NEXT/WAITING keywords
-  - TODO: Red
-  - DONE: Green
-  - Others: Yellow
-- **Full Content Display**:
-  - Multi-level headings with different colors
-  - Code blocks with borders
-  - Links with underlines
-  - Timestamps
-  - Properties drawers
-  - Lists
-- **Keyboard Navigation**: Vim-style (j/k) and arrow keys
-- **Scroll Support**: Navigate through long org files
+### 📋 **Dual View System**
+- **All TODOs**: Browse all TODO entries across files (filters out DONE items and Notes)
+- **Week Agenda**: View all items scheduled for the current week (Monday-Sunday)
+  - Shows items from all date types (SCHEDULED, DEADLINE, plain dates)
+  - Displays time distance indicators ([Today], [+2d], [+1W], etc.)
+
+### ✅ **TODO Management**
+- Browse TODO entries with keyword highlighting (TODO, DONE, NEXT, WAITING, etc.)
+- Toggle TODO states with a single key (`t`)
+- View complete entries with all content, sub-tasks, and metadata
+- Built-in full-text editor with save-to-file support
+- Create new notes on the fly
+- Delete entries with confirmation
+- Support for Notes (entries without TODO keywords)
+
+### 📅 **Advanced Date Management**
+- **Three date types**:
+  - SCHEDULED dates (`s` key)
+  - DEADLINE dates (`d` key)
+  - Plain dates (`p` key) - simple date markers without keywords
+- Visual calendar picker with date and time selection
+- Arrow key navigation in calendar
+- Month navigation with `<`/`>` or PageUp/PageDown
+- Week Agenda automatically shows nearest date from all types
+- Intelligent date sorting (earliest first)
+
+### 🏷️ **Smart Tag Management**
+- ListView-based tag editor (no manual formatting needed!)
+- Navigate tags with `↑`/`↓` or `k`/`j`
+- **Click tags to edit** (mouse support!)
+- Press `a` to add new tags
+- Press `Enter` to edit selected tag
+- Press `x` or `Delete` to remove tags
+- Empty tag list shows helpful hints
+- Tags are automatically formatted in org-mode style
+
+### ⚡ **Quick Actions**
+- **Quick Capture** (`c` key): Instantly create TODO scheduled for today
+- **Help Screen** (`?` or `h` key): View all keybindings and features
+- Tab switching between All TODOs and Week Agenda views
+- Direct file editing with changes saved to original org files
+
+### 🎨 **Rich Display**
+- Color-coded TODO states (TODO: Red, DONE: Green, Others: Yellow)
+- Multi-level heading colors
+- Code blocks with borders
+- Links with underlines
+- Timestamps and properties
+- File name display for each entry
+- Empty state hints and guides
+
+### 🔍 **Smart File Scanning**
+- Recursively scans all `.org` files (up to 5 levels deep)
+- Automatically skips hidden directories (`.git`, `.svn`, etc.)
+- Skips large directories (`node_modules`, `target`, etc.)
+- Safe to use in large directory trees
+- Works with Beorg, Orgzly, and other mobile org apps
 
 ## Installation
 
@@ -42,69 +74,130 @@ This approach is inspired by tools like Logseq and Roam Research, where blocks/e
 cargo build --release
 ```
 
+The binary will be available at `./target/release/orgstand`.
+
 ## Usage
 
 ### Browse TODO entries in current directory
 ```bash
-cargo run
-# or after building:
 ./target/release/orgstand
+# or during development:
+cargo run
 ```
 
 ### Browse TODO entries in a specific directory
 ```bash
-cargo run -- /path/to/org/directory
-# For example, with Beorg files:
-cargo run -- ~/Library/Mobile\ Documents/iCloud~com~appsonthemove~beorg/Documents/org/
+./target/release/orgstand /path/to/org/directory
+
+# Example with Beorg files:
+./target/release/orgstand ~/Library/Mobile\ Documents/iCloud~com~appsonthemove~beorg/Documents/org/
 ```
-
-This will **recursively scan all `.org` files** in the directory and all subdirectories (up to 5 levels deep), extracting all TODO entries and presenting them in a unified list regardless of which file or folder they're in.
-
-**Smart Scanning:**
-- Automatically skips hidden directories (starting with `.`)
-- Skips common large directories (`node_modules`, `target`, `.git`, etc.)
-- Won't hang even if pointed at large directory trees
-- Safe to use in your home directory with org files nested in various projects
 
 ## Keyboard Controls
 
-### Browser Mode (TODO List)
-- `↑`/`↓` or `k`/`j`: Navigate TODO entries
-- `Enter`: Open/focus on selected TODO entry
-- `q`: Quit
+### 📖 Browser Mode (All TODOs / Week Agenda)
+| Key | Action |
+|-----|--------|
+| `q` | Quit the application |
+| `?` or `h` | Show help screen |
+| `Tab` | Switch between All TODOs and Week Agenda |
+| `↑`/`k` or `↓`/`j` | Navigate up/down in the list |
+| `Enter` | Open selected TODO in viewer |
+| `t` | Toggle TODO state (TODO ↔ DONE) |
+| `s` | Set/edit SCHEDULED date |
+| `d` | Set/edit DEADLINE date |
+| `p` | Set/edit plain date |
+| `e` | Edit TODO content in editor |
+| `g` | Manage tags |
+| `c` | Quick capture (create TODO for today) |
+| `n` | Create new note |
+| `x` or `Delete` | Delete TODO |
 
-### Viewer Mode (TODO Entry View)
-- `↑`/`↓` or `k`/`j`: Scroll through entry content
-- `t`: Toggle between TODO and DONE states
-- `s`: Add/update SCHEDULED date
-- `d`: Add/update DEADLINE date
-- `e`: Enter edit mode
-- `Esc`: Back to TODO list
-- `q`: Quit
+### 👁️ Viewer Mode (Entry View)
+| Key | Action |
+|-----|--------|
+| `q` or `Esc` | Return to browser |
+| `↑`/`k` or `↓`/`j` | Scroll up/down |
+| `t` | Toggle TODO state |
+| `s` / `d` / `p` | Set dates (same as browser) |
+| `e` | Edit content |
 
-### Date Input Mode (Calendar Picker)
-- **Visual calendar** showing current month
-- `←/→` or `h`/`l`: Move day by day
-- `↑/↓` or `k`/`j`: Move week by week
-- `<`/`>` or `Page Up`/`Page Down`: Change month
-- `Enter`: Confirm selected date
-- `Esc`: Cancel without saving
-- Selected date shown as `[DD]`, today marked with `*`
+### 📅 Date Input Mode (Calendar)
+| Key | Action |
+|-----|--------|
+| `Arrows` | Navigate calendar (when editing date) |
+| `<` / `>` or `PageUp`/`PageDown` | Change month |
+| `Tab` | Switch between date and time editing |
+| `↑`/`↓` | Adjust hours (when editing time) |
+| `←`/`→` | Adjust minutes (when editing time) |
+| `Enter` | Confirm and save |
+| `Esc` | Cancel |
 
-### Editor Mode (Editing TODO Entry)
-- Normal text editing keys (arrows, backspace, delete, etc.)
-- `Esc` or `Ctrl+S`: Save changes and return to viewer mode
-- All standard text editing works!
-- Changes are automatically saved when you exit
+### ✏️ Editor Mode
+| Key | Action |
+|-----|--------|
+| `Esc` or `Ctrl+S` | Save and exit |
+| Normal keys | Edit text |
+
+### 🏷️ Tag Management
+**List Mode:**
+| Key | Action |
+|-----|--------|
+| `↑`/`k` or `↓`/`j` | Navigate tags |
+| `Enter` | Edit selected tag |
+| `a` or `n` | Add new tag |
+| `x` or `Delete` | Remove selected tag |
+| `Esc` | Save and exit |
+| **Mouse click** | Click tag to edit |
+
+**Edit Mode:**
+| Key | Action |
+|-----|--------|
+| `Enter` | Save tag |
+| `Esc` | Cancel editing |
+| Type | Edit tag name |
+
+### ❓ Help Screen
+| Key | Action |
+|-----|--------|
+| `q`, `Esc`, or `?` | Close help screen |
+| `↑`/`k` or `↓`/`j` | Scroll help text |
+
+## Date Display Format
+
+In **All TODOs** view, each entry shows date distance to help prioritize:
+
+| Format | Meaning |
+|--------|---------|
+| `[Today]` | Item is due today |
+| `[Tmrw]` | Item is due tomorrow |
+| `[Yday]` | Item was due yesterday |
+| `[+Xd]` | Item is due in X days |
+| `[+XW]` | Item is due in X weeks |
+| `[+XM]` | Item is due in X months |
+| `[-Xd]` | Item is overdue by X days |
+| `[-XW]` | Item is overdue by X weeks |
+| `[-XM]` | Item is overdue by X months |
+
+**Note:** Date distance is shown in Week Agenda view, not in All TODOs view.
+
+## Week Agenda View
+
+The Week Agenda view shows all items scheduled for the current week (Monday-Sunday):
+- Includes items with SCHEDULED, DEADLINE, or plain dates
+- Automatically calculates week boundaries using calendar API
+- Shows time distance for each item to indicate urgency
+- Sorted by date (earliest first)
 
 ## Color Scheme
 
+- **TODO Keywords**: Red (bold)
+- **DONE Keywords**: Green (bold)
+- **Other Keywords** (NEXT, WAITING, etc.): Yellow (bold)
 - **Level 1 Headings**: Light Blue
 - **Level 2 Headings**: Light Green
 - **Level 3 Headings**: Light Yellow
 - **Level 4 Headings**: Light Magenta
-- **TODO Keywords**: Red (bold)
-- **DONE Keywords**: Green (bold)
 - **Links**: Blue (underlined)
 - **Timestamps**: Magenta
 - **Code Blocks**: Cyan
@@ -112,53 +205,89 @@ This will **recursively scan all `.org` files** in the directory and all subdire
 
 ## Examples
 
-Browse all TODO entries in the example directory:
+### Basic Usage
 ```bash
-cargo run -- .
+# Browse current directory
+./target/release/orgstand .
+
+# Browse Beorg files
+./target/release/orgstand ~/Library/Mobile\ Documents/iCloud~com~appsonthemove~beorg/Documents/org/
 ```
 
-Browse your Beorg TODO entries:
-```bash
-cargo run -- ~/Library/Mobile\ Documents/iCloud~com~appsonthemove~beorg/Documents/org/
-```
+### Common Workflows
 
-This will show all TODO entries from `inbox.org` and any other org files in that directory in a single unified view.
+**Daily Review:**
+1. Press `Tab` to switch to Week Agenda
+2. See all items for the current week with time indicators
+3. Press `Enter` on an item to view details
+4. Press `t` to mark items as DONE
+
+**Adding a Task:**
+1. Press `c` for quick capture
+2. Type the task title
+3. Press `Enter` - task is created and scheduled for today
+
+**Managing Tags:**
+1. Select a TODO and press `g`
+2. Click on a tag to edit it, or press `a` to add new tags
+3. Press `Esc` to save
+
+**Setting Dates:**
+1. Select a TODO and press `s` (SCHEDULED), `d` (DEADLINE), or `p` (plain date)
+2. Navigate the calendar with arrow keys
+3. Press `Tab` to edit time
+4. Press `Enter` to save
 
 ## Architecture
 
-OrgStand demonstrates that you can work with org files without Emacs by:
-1. Recursively scanning directories and subdirectories for all `.org` files
-2. Parsing each file to extract TODO entries with their full content
-3. Presenting entries in a flat, file-agnostic view
-4. Using `ratatui` for the TUI interface
+OrgStand demonstrates a modern approach to org-mode:
+1. **Entry-centric, not file-centric**: TODOs and notes are the primary units
+2. **Intelligent views**: All TODOs and Week Agenda for different perspectives
+3. **Full context**: Each entry includes all sub-items and metadata
+4. **Direct editing**: Changes save back to source files automatically
+5. **Cross-platform**: Works with any org-mode files (Emacs, Beorg, Orgzly, etc.)
 
-**Key Design Decisions:**
-- **Entry-centric, not file-centric**: The primary unit is a TODO entry, not a file
-- **Flat hierarchy**: All TODOs are presented at the same level for easy browsing
-- **Full context**: Each entry includes all sub-items, properties, and content
-- **Direct editing**: Edit entries directly and save back to their source files
-- **File-agnostic workflow**: Work with TODOs without worrying about file organization
-
-This approach can be extended to:
-- GUI applications (using egui, iced, or Tauri)
-- Web applications (using Dioxus or Yew)
-- Mobile apps for org-mode task management
+Built with:
+- `ratatui` for the TUI interface
+- `orgize` for org-mode parsing
+- `chrono` for date/time handling
+- `tui-textarea` for text editing
 
 ## Future Enhancements
 
-- [x] ~~Edit mode for TODO entries~~ ✅ **Implemented!**
-- [ ] TODO state toggling (mark as DONE, etc.)
-- [ ] Search/filter functionality
-- [ ] Agenda view (by date)
-- [ ] Tag filtering
-- [ ] Priority sorting
-- [ ] Create new TODO entries
+### Planned Features
+- [ ] Delete date functionality (remove SCHEDULED/DEADLINE/plain dates)
+- [ ] Priority support ([#A], [#B], [#C])
+- [ ] Search and filter functionality
+- [ ] Statistics display (TODO count, DONE count, etc.)
 - [ ] Archive DONE entries
-- [ ] Export/sync capabilities
-- [ ] Calendar integration
-- [ ] Undo/redo for edits
-- [ ] Syntax highlighting in editor
+- [ ] More TODO state cycles (TODO → IN-PROGRESS → DONE)
+- [ ] Repeating tasks (.+1d, +1w, etc.)
+- [ ] Time tracking (Clock in/out)
+- [ ] Sub-task support (checkbox lists)
+- [ ] Configuration file (custom keywords, colors, etc.)
+
+### Completed Features
+- [x] Edit mode for TODO entries
+- [x] TODO state toggling
+- [x] Date management (SCHEDULED, DEADLINE, plain dates)
+- [x] Calendar picker with time selection
+- [x] Tag management
+- [x] Week Agenda view
+- [x] Help screen
+- [x] Quick capture
+- [x] Note creation
+- [x] Entry deletion
+- [x] Mouse support for tag editing
 
 ## License
 
 MIT
+
+## Contributing
+
+Contributions welcome! Feel free to open issues or submit pull requests.
+
+---
+
+**Made with ❤️ for org-mode users who want a modern, efficient TODO management experience.**
