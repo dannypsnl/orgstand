@@ -57,6 +57,9 @@ enum Mode {
         input_type: DateInputType,
         selected_date: NaiveDate,
         viewing_month: NaiveDate, // First day of the month being viewed
+        hour: u32,
+        minute: u32,
+        editing_time: bool, // true if currently editing time, false if editing date
     },
 }
 
@@ -398,14 +401,18 @@ impl App {
         if let Mode::Viewer { todo, .. } = &self.mode {
             let today = Local::now().date_naive();
 
-            // Try to parse existing date from todo content
+            // Try to parse existing date and time from todo content
             let initial_date = Self::parse_existing_date(&todo.content, &input_type).unwrap_or(today);
+            let (hour, minute) = Self::parse_existing_time(&todo.content, &input_type);
 
             self.mode = Mode::DateInput {
                 todo: todo.clone(),
                 input_type,
                 selected_date: initial_date,
                 viewing_month: NaiveDate::from_ymd_opt(initial_date.year(), initial_date.month(), 1).unwrap(),
+                hour,
+                minute,
+                editing_time: false,
             };
         }
         Ok(())
@@ -439,17 +446,54 @@ impl App {
         None
     }
 
+    fn parse_existing_time(content: &str, input_type: &DateInputType) -> (u32, u32) {
+        let keyword = match input_type {
+            DateInputType::Scheduled => "SCHEDULED:",
+            DateInputType::Deadline => "DEADLINE:",
+        };
+
+        // Look for lines containing the keyword
+        for line in content.lines() {
+            if let Some(pos) = line.find(keyword) {
+                // Extract time from <YYYY-MM-DD Day HH:MM>
+                let rest = &line[pos + keyword.len()..];
+                if let Some(start) = rest.find('<') {
+                    if let Some(end) = rest.find('>') {
+                        let date_str = &rest[start + 1..end];
+                        let parts: Vec<&str> = date_str.split_whitespace().collect();
+                        // Time is the third part (after date and day of week)
+                        if parts.len() >= 3 {
+                            if let Some(time_part) = parts.get(2) {
+                                let time_components: Vec<&str> = time_part.split(':').collect();
+                                if time_components.len() == 2 {
+                                    if let (Ok(h), Ok(m)) = (
+                                        time_components[0].parse::<u32>(),
+                                        time_components[1].parse::<u32>(),
+                                    ) {
+                                        return (h, m);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Default to 00:00 if no time found
+        (0, 0)
+    }
+
     fn submit_date_input(&mut self) -> Result<()> {
         // Clone data first to avoid borrow conflicts
-        let (todo_clone, input_type_clone, selected_date) = if let Mode::DateInput { todo, input_type, selected_date, .. } = &self.mode {
-            (todo.clone(), input_type.clone(), *selected_date)
+        let (todo_clone, input_type_clone, selected_date, hour, minute) = if let Mode::DateInput { todo, input_type, selected_date, hour, minute, .. } = &self.mode {
+            (todo.clone(), input_type.clone(), *selected_date, *hour, *minute)
         } else {
             return Ok(());
         };
 
-        // Format date as org-mode date string with day of week
+        // Format date as org-mode date string with day of week and time
         let weekday = selected_date.format("%a");
-        let date_str = format!("{} {}", selected_date.format("%Y-%m-%d"), weekday);
+        let date_str = format!("{} {} {:02}:{:02}", selected_date.format("%Y-%m-%d"), weekday, hour, minute);
 
         // Temporarily switch to viewer mode to release borrow
         self.mode = Mode::Viewer {
@@ -470,19 +514,36 @@ impl App {
     }
 
     fn calendar_move_day(&mut self, days: i64) {
-        if let Mode::DateInput { selected_date, viewing_month, .. } = &mut self.mode {
-            if let Some(new_date) = selected_date.checked_add_signed(chrono::Duration::days(days)) {
-                *selected_date = new_date;
+        if let Mode::DateInput { selected_date, viewing_month, editing_time, .. } = &mut self.mode {
+            if !*editing_time {
+                if let Some(new_date) = selected_date.checked_add_signed(chrono::Duration::days(days)) {
+                    *selected_date = new_date;
 
-                // Update viewing month if we moved to a different month
-                if selected_date.year() != viewing_month.year() || selected_date.month() != viewing_month.month() {
-                    *viewing_month = NaiveDate::from_ymd_opt(
-                        selected_date.year(),
-                        selected_date.month(),
-                        1
-                    ).unwrap();
+                    // Update viewing month if we moved to a different month
+                    if selected_date.year() != viewing_month.year() || selected_date.month() != viewing_month.month() {
+                        *viewing_month = NaiveDate::from_ymd_opt(
+                            selected_date.year(),
+                            selected_date.month(),
+                            1
+                        ).unwrap();
+                    }
                 }
             }
+        }
+    }
+
+    fn adjust_time(&mut self, hours_delta: i32, minutes_delta: i32) {
+        if let Mode::DateInput { hour, minute, editing_time, .. } = &mut self.mode {
+            if *editing_time {
+                *hour = ((*hour as i32 + hours_delta).rem_euclid(24)) as u32;
+                *minute = ((*minute as i32 + minutes_delta).rem_euclid(60)) as u32;
+            }
+        }
+    }
+
+    fn toggle_time_edit(&mut self) {
+        if let Mode::DateInput { editing_time, .. } = &mut self.mode {
+            *editing_time = !*editing_time;
         }
     }
 
@@ -713,12 +774,16 @@ impl App {
         if let Some(todo) = self.get_selected_todo_from_browser() {
             let today = Local::now().date_naive();
             let initial_date = Self::parse_existing_date(&todo.content, &input_type).unwrap_or(today);
+            let (hour, minute) = Self::parse_existing_time(&todo.content, &input_type);
 
             self.mode = Mode::DateInput {
                 todo,
                 input_type,
                 selected_date: initial_date,
                 viewing_month: NaiveDate::from_ymd_opt(initial_date.year(), initial_date.month(), 1).unwrap(),
+                hour,
+                minute,
+                editing_time: false,
             };
         }
         Ok(())
@@ -935,21 +1000,35 @@ fn run_app<B: ratatui::backend::Backend>(
                         .style(Style::default().fg(Color::Gray));
                     f.render_widget(status, chunks[1]);
                 }
-                Mode::DateInput { input_type, selected_date, viewing_month, .. } => {
+                Mode::DateInput { input_type, selected_date, viewing_month, hour, minute, editing_time, .. } => {
                     let title = match input_type {
-                        DateInputType::Scheduled => "Select SCHEDULED Date",
-                        DateInputType::Deadline => "Select DEADLINE Date",
+                        DateInputType::Scheduled => "Select SCHEDULED Date & Time",
+                        DateInputType::Deadline => "Select DEADLINE Date & Time",
                     };
 
-                    // Render calendar
-                    let calendar_lines = App::render_calendar(*viewing_month, *selected_date);
+                    // Render calendar and time
+                    let mut calendar_lines = App::render_calendar(*viewing_month, *selected_date);
+                    calendar_lines.push(Line::from(""));
+
+                    // Show time input
+                    let time_display = if *editing_time {
+                        format!("Time: [{:02}:{:02}] (editing)", hour, minute)
+                    } else {
+                        format!("Time: {:02}:{:02}", hour, minute)
+                    };
+                    calendar_lines.push(Line::from(time_display));
+
                     let calendar_widget = Paragraph::new(calendar_lines)
                         .block(Block::default().borders(Borders::ALL).title(title))
                         .style(Style::default());
                     f.render_widget(calendar_widget, chunks[0]);
 
-                    let status = Paragraph::new("Arrows: Navigate | </> or Page Up/Down: Change Month | Enter: Confirm | Esc: Cancel")
-                        .block(Block::default().borders(Borders::ALL))
+                    let status = if *editing_time {
+                        Paragraph::new("↑/↓: Hours | ←/→: Minutes | Tab: Switch to Date | Enter: Confirm | Esc: Cancel")
+                    } else {
+                        Paragraph::new("Arrows: Navigate Date | </> or Page Up/Down: Change Month | Tab: Switch to Time | Enter: Confirm | Esc: Cancel")
+                    };
+                    let status = status.block(Block::default().borders(Borders::ALL))
                         .style(Style::default().fg(Color::Gray));
                     f.render_widget(status, chunks[1]);
                 }
@@ -1031,33 +1110,58 @@ fn run_app<B: ratatui::backend::Backend>(
                     }
                     _ => {}
                 },
-                Mode::DateInput { .. } => match key.code {
-                    KeyCode::Enter => {
-                        app.submit_date_input()?;
+                Mode::DateInput { editing_time, .. } => {
+                    match key.code {
+                        KeyCode::Enter => {
+                            app.submit_date_input()?;
+                        }
+                        KeyCode::Esc => {
+                            app.cancel_date_input()?;
+                        }
+                        KeyCode::Tab => {
+                            app.toggle_time_edit();
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            if *editing_time {
+                                app.adjust_time(1, 0);
+                            } else {
+                                app.calendar_move_day(-7);
+                            }
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if *editing_time {
+                                app.adjust_time(-1, 0);
+                            } else {
+                                app.calendar_move_day(7);
+                            }
+                        }
+                        KeyCode::Left | KeyCode::Char('h') => {
+                            if *editing_time {
+                                app.adjust_time(0, -1);
+                            } else {
+                                app.calendar_move_day(-1);
+                            }
+                        }
+                        KeyCode::Right | KeyCode::Char('l') => {
+                            if *editing_time {
+                                app.adjust_time(0, 1);
+                            } else {
+                                app.calendar_move_day(1);
+                            }
+                        }
+                        KeyCode::Char('<') | KeyCode::PageUp => {
+                            if !*editing_time {
+                                app.calendar_change_month(-1);
+                            }
+                        }
+                        KeyCode::Char('>') | KeyCode::PageDown => {
+                            if !*editing_time {
+                                app.calendar_change_month(1);
+                            }
+                        }
+                        _ => {}
                     }
-                    KeyCode::Esc => {
-                        app.cancel_date_input()?;
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        app.calendar_move_day(-7);
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        app.calendar_move_day(7);
-                    }
-                    KeyCode::Left | KeyCode::Char('h') => {
-                        app.calendar_move_day(-1);
-                    }
-                    KeyCode::Right | KeyCode::Char('l') => {
-                        app.calendar_move_day(1);
-                    }
-                    KeyCode::Char('<') | KeyCode::PageUp => {
-                        app.calendar_change_month(-1);
-                    }
-                    KeyCode::Char('>') | KeyCode::PageDown => {
-                        app.calendar_change_month(1);
-                    }
-                    _ => {}
-                },
+                }
                 Mode::Editor { textarea, .. } => {
                     match key.code {
                         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
