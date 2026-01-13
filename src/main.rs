@@ -407,20 +407,29 @@ impl App {
                     .collect()
             }
             ViewFilter::Today => {
+                // Week Agenda: show items from Monday to Sunday of current week
                 let today = Local::now().date_naive();
+
+                // Get the weekday (Mon = 0, Tue = 1, ..., Sun = 6)
+                let weekday = today.weekday().num_days_from_monday();
+
+                // Calculate Monday of this week
+                let week_start = today - chrono::Duration::days(weekday as i64);
+
+                // Calculate Sunday of this week
+                let week_end = week_start + chrono::Duration::days(6);
+
                 todos
                     .iter()
                     .filter(|todo| {
-                        // First check for SCHEDULED date
-                        if let Some(scheduled_date) =
-                            Self::parse_existing_date(&todo.content, &DateInputType::Scheduled)
-                        {
-                            return scheduled_date == today;
-                        }
+                        // Get the date to check (SCHEDULED, DEADLINE, or any date)
+                        let date_to_check = Self::parse_existing_date(&todo.content, &DateInputType::Scheduled)
+                            .or_else(|| Self::parse_existing_date(&todo.content, &DateInputType::Deadline))
+                            .or_else(|| Self::parse_any_date(&todo.content));
 
-                        // If no SCHEDULED date, check for any date in the content
-                        if let Some(any_date) = Self::parse_any_date(&todo.content) {
-                            return any_date == today;
+                        // Check if date is within the week range (Monday to Sunday)
+                        if let Some(date) = date_to_check {
+                            return date >= week_start && date <= week_end;
                         }
 
                         false
@@ -1337,8 +1346,8 @@ fn run_app<B: ratatui::backend::Backend>(
                                 String::new()
                             };
 
-                            // Get date and format distance (only for All TODOs view)
-                            let date_str = if matches!(filter, ViewFilter::All) {
+                            // Get date and format distance (only for Week Agenda view)
+                            let date_str = if matches!(filter, ViewFilter::Today) {
                                 if let Some(date) = App::get_display_date(todo) {
                                     let distance = App::format_date_distance(date);
                                     format!(" [{}]", distance)
@@ -1380,7 +1389,7 @@ fn run_app<B: ratatui::backend::Backend>(
 
                     let view_mode = match filter {
                         ViewFilter::All => "All TODOs",
-                        ViewFilter::Today => "Today's Agenda",
+                        ViewFilter::Today => "Week Agenda",
                     };
 
                     let list = List::new(items).block(
@@ -1491,10 +1500,10 @@ fn run_app<B: ratatui::backend::Backend>(
                             Span::styled("OrgStand - Keybindings Help", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
                         ]),
                         Line::from(""),
-                        Line::from(vec![Span::styled("== Browser Mode (All TODOs / Today's Agenda) ==", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
+                        Line::from(vec![Span::styled("== Browser Mode (All TODOs / Week Agenda) ==", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
                         Line::from("  q             Quit the application"),
                         Line::from("  ? or h        Show this help screen"),
-                        Line::from("  Tab           Switch between All TODOs and Today's Agenda"),
+                        Line::from("  Tab           Switch between All TODOs and Week Agenda"),
                         Line::from("  ↑/k or ↓/j    Navigate up/down in the list"),
                         Line::from("  Enter         Open selected TODO in viewer"),
                         Line::from("  t             Toggle TODO state (TODO ↔ DONE)"),
@@ -1536,6 +1545,11 @@ fn run_app<B: ratatui::backend::Backend>(
                         Line::from(vec![Span::styled("== Quick Capture ==", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
                         Line::from("  Enter         Create TODO"),
                         Line::from("  Esc           Cancel"),
+                        Line::from(""),
+                        Line::from(vec![Span::styled("== Week Agenda View ==", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
+                        Line::from("  Shows items from Monday to Sunday of the current week"),
+                        Line::from("  Includes all items with SCHEDULED, DEADLINE, or plain dates"),
+                        Line::from("  Date distance displayed (e.g., [Today], [+2d]) to show urgency"),
                         Line::from(""),
                         Line::from(vec![Span::styled("== Date Display Format ==", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
                         Line::from("  [Today]       Item is due today"),
