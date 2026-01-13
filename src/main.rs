@@ -63,6 +63,7 @@ enum Mode {
 struct App {
     mode: Mode,
     directory: PathBuf,
+    last_filter: ViewFilter,
 }
 
 impl App {
@@ -89,6 +90,7 @@ impl App {
                 filter: ViewFilter::Today, // Default to agenda view (today's todos)
             },
             directory,
+            last_filter: ViewFilter::Today,
         })
     }
 
@@ -228,6 +230,7 @@ impl App {
 
     fn open_todo(&mut self) -> Result<()> {
         if let Mode::Browser { todos, selected, filter } = &self.mode {
+            self.last_filter = filter.clone();
             let filtered_todos = Self::filter_todos(todos, filter);
             if let Some(todo) = filtered_todos.get(*selected) {
                 self.mode = Mode::Viewer {
@@ -265,7 +268,7 @@ impl App {
             self.mode = Mode::Browser {
                 todos,
                 selected: 0,
-                filter: ViewFilter::Today,
+                filter: self.last_filter.clone(),
             };
         }
         Ok(())
@@ -320,7 +323,7 @@ impl App {
         self.mode = Mode::Browser {
             todos,
             selected: 0,
-            filter: ViewFilter::Today,
+            filter: self.last_filter.clone(),
         };
         Ok(())
     }
@@ -354,6 +357,7 @@ impl App {
                 ViewFilter::All => ViewFilter::Today,
                 ViewFilter::Today => ViewFilter::All,
             };
+            self.last_filter = new_filter.clone();
             self.mode = Mode::Browser {
                 todos: todos.clone(),
                 selected: 0, // Reset selection when changing filter
@@ -614,14 +618,8 @@ impl App {
 
             std::fs::write(&todo.file_path, result.join("\n"))?;
 
-            // Reload
-            let todos = Self::extract_all_todos(&self.directory)?;
-            if let Some(updated) = todos.iter().find(|t| t.title == todo.title && t.file_path == todo.file_path) {
-                self.mode = Mode::Viewer {
-                    todo: updated.clone(),
-                    scroll: 0,
-                };
-            }
+            // Return to browser
+            self.back_to_browser()?;
         }
         Ok(())
     }
@@ -660,14 +658,8 @@ impl App {
 
             std::fs::write(&todo.file_path, result.join("\n"))?;
 
-            // Reload
-            let todos = Self::extract_all_todos(&self.directory)?;
-            if let Some(updated) = todos.iter().find(|t| t.title == todo.title && t.file_path == todo.file_path) {
-                self.mode = Mode::Viewer {
-                    todo: updated.clone(),
-                    scroll: 0,
-                };
-            }
+            // Return to browser
+            self.back_to_browser()?;
         }
         Ok(())
     }
@@ -684,29 +676,133 @@ impl App {
         // Save to file
         Self::update_todo_in_file(&todo_clone.file_path, &todo_clone, &new_content)?;
 
-        // Read back and find updated todo
-        let updated_content = std::fs::read_to_string(&todo_clone.file_path)?;
-        let todos = Self::extract_todos_from_content(&updated_content, &todo_clone.file_path);
+        // Return to browser after editing
+        self.back_to_browser()?;
 
-        // Try to find the updated version, otherwise use the new content directly
-        let updated_todo = todos
-            .iter()
-            .find(|t| t.title == todo_clone.title && t.keyword == todo_clone.keyword)
-            .cloned()
-            .unwrap_or_else(|| TodoEntry {
-                keyword: todo_clone.keyword.clone(),
-                title: todo_clone.title.clone(),
-                file_path: todo_clone.file_path.clone(),
-                content: new_content,
-                level: todo_clone.level,
-            });
+        Ok(())
+    }
 
-        // Now we can safely update mode
-        self.mode = Mode::Viewer {
-            todo: updated_todo,
-            scroll: 0,
-        };
+    fn get_selected_todo_from_browser(&self) -> Option<TodoEntry> {
+        if let Mode::Browser { todos, selected, filter } = &self.mode {
+            let filtered_todos = Self::filter_todos(todos, filter);
+            filtered_todos.get(*selected).cloned()
+        } else {
+            None
+        }
+    }
 
+    fn toggle_todo_state_from_browser(&mut self) -> Result<()> {
+        if let Some(todo) = self.get_selected_todo_from_browser() {
+            let new_keyword = if todo.keyword == "TODO" { "DONE" } else { "TODO" };
+
+            // Update the keyword in the file
+            let file_content = std::fs::read_to_string(&todo.file_path)?;
+            let updated_content = file_content.replace(
+                &format!("* {} {}", todo.keyword, todo.title),
+                &format!("* {} {}", new_keyword, todo.title),
+            );
+            std::fs::write(&todo.file_path, updated_content)?;
+
+            // Refresh browser
+            self.back_to_browser()?;
+        }
+        Ok(())
+    }
+
+    fn enter_date_input_from_browser(&mut self, input_type: DateInputType) -> Result<()> {
+        if let Some(todo) = self.get_selected_todo_from_browser() {
+            let today = Local::now().date_naive();
+            let initial_date = Self::parse_existing_date(&todo.content, &input_type).unwrap_or(today);
+
+            self.mode = Mode::DateInput {
+                todo,
+                input_type,
+                selected_date: initial_date,
+                viewing_month: NaiveDate::from_ymd_opt(initial_date.year(), initial_date.month(), 1).unwrap(),
+            };
+        }
+        Ok(())
+    }
+
+    fn enter_edit_mode_from_browser(&mut self) -> Result<()> {
+        if let Some(todo) = self.get_selected_todo_from_browser() {
+            let mut textarea = TextArea::new(todo.content.lines().map(|s| s.to_string()).collect());
+            textarea.set_block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!("Editing: [{}] {}", todo.keyword, todo.title)),
+            );
+            self.mode = Mode::Editor { todo, textarea };
+        }
+        Ok(())
+    }
+
+    fn delete_todo_from_browser(&mut self) -> Result<()> {
+        if let Some(todo) = self.get_selected_todo_from_browser() {
+            // Read file content
+            let file_content = std::fs::read_to_string(&todo.file_path)?;
+            let lines: Vec<&str> = file_content.lines().collect();
+            let mut result = Vec::new();
+            let mut i = 0;
+            let mut found = false;
+
+            while i < lines.len() {
+                let line = lines[i];
+
+                // Look for the matching TODO entry
+                if !found && line.starts_with('*') && line.contains(&todo.keyword) && line.contains(&todo.title) {
+                    found = true;
+                    let level = line.chars().take_while(|c| *c == '*').count();
+
+                    // Skip this entry and all its children
+                    i += 1;
+                    while i < lines.len() {
+                        let next_line = lines[i];
+                        if next_line.starts_with('*') {
+                            let next_level = next_line.chars().take_while(|c| *c == '*').count();
+                            if next_level <= level {
+                                break;
+                            }
+                        }
+                        i += 1;
+                    }
+                    continue;
+                }
+
+                result.push(line);
+                i += 1;
+            }
+
+            std::fs::write(&todo.file_path, result.join("\n"))?;
+
+            // Refresh browser
+            self.back_to_browser()?;
+        }
+        Ok(())
+    }
+
+    fn create_new_todo(&mut self) -> Result<()> {
+        // For now, create a simple TODO entry in inbox.org
+        let inbox_path = self.directory.join("inbox.org");
+
+        // Create a basic TODO entry with timestamp
+        let now = Local::now();
+        let new_entry = format!(
+            "\n* TODO New Task\n:PROPERTIES:\n:CREATED: [{}]\n:END:\n",
+            now.format("%Y-%m-%d %a %H:%M:%S")
+        );
+
+        // Append to inbox.org (create if doesn't exist)
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&inbox_path)?;
+        file.write_all(new_entry.as_bytes())?;
+
+        // Refresh browser
+        self.back_to_browser()?;
         Ok(())
     }
 
@@ -805,7 +901,7 @@ fn run_app<B: ratatui::backend::Backend>(
                     );
                     f.render_widget(list, chunks[0]);
 
-                    let status = Paragraph::new("↑/↓: Navigate | Enter: Open | Tab: Toggle View | q: Quit")
+                    let status = Paragraph::new("↑/↓: Navigate | Enter: View | t: Toggle | s: Schedule | d: Deadline | e: Edit | n: New | x: Delete | Tab: View Mode | q: Quit")
                         .block(Block::default().borders(Borders::ALL))
                         .style(Style::default().fg(Color::Gray));
                     f.render_widget(status, chunks[1]);
@@ -888,6 +984,24 @@ fn run_app<B: ratatui::backend::Backend>(
                         }
                         KeyCode::Enter => {
                             app.open_todo()?;
+                        }
+                        KeyCode::Char('t') => {
+                            app.toggle_todo_state_from_browser()?;
+                        }
+                        KeyCode::Char('s') => {
+                            app.enter_date_input_from_browser(DateInputType::Scheduled)?;
+                        }
+                        KeyCode::Char('d') => {
+                            app.enter_date_input_from_browser(DateInputType::Deadline)?;
+                        }
+                        KeyCode::Char('e') => {
+                            app.enter_edit_mode_from_browser()?;
+                        }
+                        KeyCode::Char('x') | KeyCode::Delete => {
+                            app.delete_todo_from_browser()?;
+                        }
+                        KeyCode::Char('n') => {
+                            app.create_new_todo()?;
                         }
                         _ => {}
                     }
