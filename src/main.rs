@@ -9,7 +9,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Terminal,
 };
@@ -69,6 +69,9 @@ enum Mode {
     },
     QuickCapture {
         title_input: TextArea<'static>,
+    },
+    Help {
+        scroll: u16,
     },
 }
 
@@ -386,6 +389,10 @@ impl App {
             filter: self.last_filter.clone(),
         };
         Ok(())
+    }
+
+    fn enter_help(&mut self) {
+        self.mode = Mode::Help { scroll: 0 };
     }
 
     fn filter_todos(todos: &[TodoEntry], filter: &ViewFilter) -> Vec<TodoEntry> {
@@ -1477,6 +1484,81 @@ fn run_app<B: ratatui::backend::Backend>(
                         .style(Style::default().fg(Color::Green));
                     f.render_widget(status, chunks[1]);
                 }
+                Mode::Help { scroll } => {
+                    // Help screen
+                    let help_text = vec![
+                        Line::from(vec![
+                            Span::styled("OrgStand - Keybindings Help", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                        ]),
+                        Line::from(""),
+                        Line::from(vec![Span::styled("== Browser Mode (All TODOs / Today's Agenda) ==", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
+                        Line::from("  q             Quit the application"),
+                        Line::from("  ? or h        Show this help screen"),
+                        Line::from("  Tab           Switch between All TODOs and Today's Agenda"),
+                        Line::from("  ↑/k or ↓/j    Navigate up/down in the list"),
+                        Line::from("  Enter         Open selected TODO in viewer"),
+                        Line::from("  t             Toggle TODO state (TODO ↔ DONE)"),
+                        Line::from("  s             Set/edit SCHEDULED date"),
+                        Line::from("  d             Set/edit DEADLINE date"),
+                        Line::from("  p             Set/edit plain date"),
+                        Line::from("  e             Edit TODO content in editor"),
+                        Line::from("  g             Manage tags"),
+                        Line::from("  c             Quick capture (create TODO for today)"),
+                        Line::from("  n             Create new note"),
+                        Line::from("  x or Delete   Delete TODO"),
+                        Line::from(""),
+                        Line::from(vec![Span::styled("== Viewer Mode ==", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
+                        Line::from("  q             Return to browser"),
+                        Line::from("  Esc           Return to browser"),
+                        Line::from("  ↑/k or ↓/j    Scroll up/down"),
+                        Line::from("  t             Toggle TODO state"),
+                        Line::from("  s/d/p         Set dates (same as browser)"),
+                        Line::from("  e             Edit content"),
+                        Line::from(""),
+                        Line::from(vec![Span::styled("== Date Input Mode ==", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
+                        Line::from("  Arrows        Navigate calendar (when editing date)"),
+                        Line::from("  </> PageUp/Dn Change month"),
+                        Line::from("  Tab           Switch between date and time editing"),
+                        Line::from("  ↑/↓           Adjust hours (when editing time)"),
+                        Line::from("  ←/→           Adjust minutes (when editing time)"),
+                        Line::from("  Enter         Confirm and save"),
+                        Line::from("  Esc           Cancel"),
+                        Line::from(""),
+                        Line::from(vec![Span::styled("== Editor Mode ==", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
+                        Line::from("  Esc or Ctrl+S Save and exit"),
+                        Line::from("  Normal keys   Edit text"),
+                        Line::from(""),
+                        Line::from(vec![Span::styled("== Tag Management ==", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
+                        Line::from("  Enter         Save tags"),
+                        Line::from("  Esc           Cancel"),
+                        Line::from("  Type          Edit tags (format: :tag1:tag2:)"),
+                        Line::from(""),
+                        Line::from(vec![Span::styled("== Quick Capture ==", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
+                        Line::from("  Enter         Create TODO"),
+                        Line::from("  Esc           Cancel"),
+                        Line::from(""),
+                        Line::from(vec![Span::styled("== Date Display Format ==", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
+                        Line::from("  [Today]       Item is due today"),
+                        Line::from("  [Tmrw]        Item is due tomorrow"),
+                        Line::from("  [+Xd]         Item is due in X days"),
+                        Line::from("  [+XW]         Item is due in X weeks"),
+                        Line::from("  [+XM]         Item is due in X months"),
+                        Line::from("  [-Xd/W/M]     Item is overdue by X days/weeks/months"),
+                        Line::from(""),
+                        Line::from("Press q, Esc, or ? to close this help screen"),
+                    ];
+
+                    let help_widget = Paragraph::new(help_text)
+                        .block(Block::default().borders(Borders::ALL).title("Help"))
+                        .scroll((*scroll, 0))
+                        .style(Style::default());
+                    f.render_widget(help_widget, chunks[0]);
+
+                    let status = Paragraph::new("↑/k or ↓/j: Scroll | q/Esc/?: Close")
+                        .block(Block::default().borders(Borders::ALL))
+                        .style(Style::default().fg(Color::Gray));
+                    f.render_widget(status, chunks[1]);
+                }
             }
         })?;
 
@@ -1526,6 +1608,9 @@ fn run_app<B: ratatui::backend::Backend>(
                         }
                         KeyCode::Char('x') | KeyCode::Delete => {
                             app.delete_todo_from_browser()?;
+                        }
+                        KeyCode::Char('?') | KeyCode::Char('h') => {
+                            app.enter_help();
                         }
                         _ => {}
                     }
@@ -1650,6 +1735,20 @@ fn run_app<B: ratatui::backend::Backend>(
                             // Pass all other keys to the title input
                             title_input.input(key);
                         }
+                    }
+                }
+                Mode::Help { scroll } => {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?') => {
+                            app.back_to_browser()?;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            *scroll = scroll.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            *scroll = scroll.saturating_add(1);
+                        }
+                        _ => {}
                     }
                 }
             }
