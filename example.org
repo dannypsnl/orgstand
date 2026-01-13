@@ -1,5 +1,5 @@
 * TODO world
-SCHEDULED: <2026-01-14 Wed>
+SCHEDULED: <2026-01-13 Tue>
 DEADLINE: <2026-02-23 Mon>
 
 * TODO hello

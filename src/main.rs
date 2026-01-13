@@ -26,6 +26,12 @@ struct TodoEntry {
     level: usize,
 }
 
+#[derive(Clone, PartialEq)]
+enum ViewFilter {
+    All,
+    Today,
+}
+
 #[derive(Clone)]
 enum DateInputType {
     Scheduled,
@@ -36,6 +42,7 @@ enum Mode {
     Browser {
         todos: Vec<TodoEntry>,
         selected: usize,
+        filter: ViewFilter,
     },
     Viewer {
         todo: TodoEntry,
@@ -76,7 +83,11 @@ impl App {
         let todos = Self::extract_all_todos(&directory)?;
 
         Ok(App {
-            mode: Mode::Browser { todos, selected: 0 },
+            mode: Mode::Browser {
+                todos,
+                selected: 0,
+                filter: ViewFilter::Today, // Default to agenda view (today's todos)
+            },
             directory,
         })
     }
@@ -216,8 +227,9 @@ impl App {
     }
 
     fn open_todo(&mut self) -> Result<()> {
-        if let Mode::Browser { todos, selected } = &self.mode {
-            if let Some(todo) = todos.get(*selected) {
+        if let Mode::Browser { todos, selected, filter } = &self.mode {
+            let filtered_todos = Self::filter_todos(todos, filter);
+            if let Some(todo) = filtered_todos.get(*selected) {
                 self.mode = Mode::Viewer {
                     todo: todo.clone(),
                     scroll: 0,
@@ -250,7 +262,11 @@ impl App {
 
             // Return to browser and refresh
             let todos = Self::extract_all_todos(&self.directory)?;
-            self.mode = Mode::Browser { todos, selected: 0 };
+            self.mode = Mode::Browser {
+                todos,
+                selected: 0,
+                filter: ViewFilter::Today,
+            };
         }
         Ok(())
     }
@@ -301,8 +317,49 @@ impl App {
 
     fn back_to_browser(&mut self) -> Result<()> {
         let todos = Self::extract_all_todos(&self.directory)?;
-        self.mode = Mode::Browser { todos, selected: 0 };
+        self.mode = Mode::Browser {
+            todos,
+            selected: 0,
+            filter: ViewFilter::Today,
+        };
         Ok(())
+    }
+
+    fn filter_todos(todos: &[TodoEntry], filter: &ViewFilter) -> Vec<TodoEntry> {
+        match filter {
+            ViewFilter::All => todos.to_vec(),
+            ViewFilter::Today => {
+                let today = Local::now().date_naive();
+                todos
+                    .iter()
+                    .filter(|todo| {
+                        // Check if the TODO has a SCHEDULED date matching today
+                        if let Some(scheduled_date) =
+                            Self::parse_existing_date(&todo.content, &DateInputType::Scheduled)
+                        {
+                            scheduled_date == today
+                        } else {
+                            false
+                        }
+                    })
+                    .cloned()
+                    .collect()
+            }
+        }
+    }
+
+    fn toggle_view_filter(&mut self) {
+        if let Mode::Browser { todos, selected, filter } = &self.mode {
+            let new_filter = match filter {
+                ViewFilter::All => ViewFilter::Today,
+                ViewFilter::Today => ViewFilter::All,
+            };
+            self.mode = Mode::Browser {
+                todos: todos.clone(),
+                selected: 0, // Reset selection when changing filter
+                filter: new_filter,
+            };
+        }
     }
 
     fn toggle_todo_state(&mut self) -> Result<()> {
@@ -699,9 +756,12 @@ fn run_app<B: ratatui::backend::Backend>(
                 .split(f.area());
 
             match &app.mode {
-                Mode::Browser { todos, selected } => {
+                Mode::Browser { todos, selected, filter } => {
+                    // Apply filter to todos
+                    let filtered_todos = App::filter_todos(todos, filter);
+
                     // TODO entries browser
-                    let items: Vec<ListItem> = todos
+                    let items: Vec<ListItem> = filtered_todos
                         .iter()
                         .enumerate()
                         .map(|(i, todo)| {
@@ -733,14 +793,19 @@ fn run_app<B: ratatui::backend::Backend>(
                         })
                         .collect();
 
+                    let view_mode = match filter {
+                        ViewFilter::All => "All TODOs",
+                        ViewFilter::Today => "Today's Agenda",
+                    };
+
                     let list = List::new(items).block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .title(format!("TODO Entries ({}) - {}", todos.len(), app.directory.display())),
+                            .title(format!("{} ({}/{}) - {}", view_mode, filtered_todos.len(), todos.len(), app.directory.display())),
                     );
                     f.render_widget(list, chunks[0]);
 
-                    let status = Paragraph::new("↑/↓: Navigate | Enter: Open | q: Quit")
+                    let status = Paragraph::new("↑/↓: Navigate | Enter: Open | Tab: Toggle View | q: Quit")
                         .block(Block::default().borders(Borders::ALL))
                         .style(Style::default().fg(Color::Gray));
                     f.render_widget(status, chunks[1]);
@@ -806,21 +871,27 @@ fn run_app<B: ratatui::backend::Backend>(
 
         if let Event::Key(key) = event::read()? {
             match &mut app.mode {
-                Mode::Browser { todos, selected } => match key.code {
-                    KeyCode::Char('q') => return Ok(()),
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        *selected = selected.saturating_sub(1);
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if *selected < todos.len().saturating_sub(1) {
-                            *selected += 1;
+                Mode::Browser { todos, selected, filter } => {
+                    let filtered_len = App::filter_todos(todos, filter).len();
+                    match key.code {
+                        KeyCode::Char('q') => return Ok(()),
+                        KeyCode::Tab => {
+                            app.toggle_view_filter();
                         }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            *selected = selected.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if *selected < filtered_len.saturating_sub(1) {
+                                *selected += 1;
+                            }
+                        }
+                        KeyCode::Enter => {
+                            app.open_todo()?;
+                        }
+                        _ => {}
                     }
-                    KeyCode::Enter => {
-                        app.open_todo()?;
-                    }
-                    _ => {}
-                },
+                }
                 Mode::Viewer { scroll, .. } => match key.code {
                     KeyCode::Char('q') => return Ok(()),
                     KeyCode::Char('t') => {
