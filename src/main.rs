@@ -7,7 +7,7 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
@@ -186,111 +186,67 @@ impl App {
 
         let mut todos = Vec::new();
         let org = Org::parse(content);
+        let lines: Vec<&str> = content.lines().collect();
 
-        // Use orgize to parse headlines
         for headline in org.headlines() {
             let title_obj = headline.title(&org);
-            let title_raw = title_obj.raw.to_string();
-
-            // Check if it has a TODO keyword
-            // In orgize, we need to check the original line for the keyword
-            // The title.raw contains just the title without keyword
-            let lines: Vec<&str> = content.lines().collect();
-
-            // Find the line that starts with the right number of stars and contains our title
             let level = headline.level();
+
+            // Use orgize's built-in keyword and tags parsing
+            let keyword = title_obj
+                .keyword
+                .as_ref()
+                .map(|k| k.to_string())
+                .unwrap_or_default();
+            let title = title_obj.raw.trim().to_string();
+            let tags: Vec<String> = title_obj.tags.iter().map(|t| t.to_string()).collect();
+
+            // Find the line index for this headline to extract content
             let stars = "*".repeat(level);
-
-            for (i, line) in lines.iter().enumerate() {
-                if line.starts_with(&stars) && line.contains(title_raw.as_str()) {
-                    // Parse the heading line
-                    let parts: Vec<&str> = line.splitn(3, ' ').collect();
-                    if parts.len() >= 2 {
-                        let potential_keyword = parts[1];
-
-                        let (keyword, title, tags) = if matches!(
-                            potential_keyword,
-                            "TODO" | "DONE" | "NEXT" | "WAITING" | "CANCELLED" | "CANCELED"
-                        ) {
-                            // It has a TODO keyword
-                            let keyword = potential_keyword.to_string();
-                            let rest = parts.get(2).unwrap_or(&"");
-                            let (title, tags) = Self::parse_title_and_tags(rest);
-                            (keyword, title, tags)
-                        } else {
-                            // It's a Note without a keyword
-                            // The title starts from parts[1] (after the stars)
-                            let rest = &line[stars.len()..].trim_start();
-                            let (title, tags) = Self::parse_title_and_tags(rest);
-                            (String::new(), title, tags)
-                        };
-
-                        // Extract content until next heading of same or higher level
-                        let mut entry_content = String::new();
-                        entry_content.push_str(line);
-                        entry_content.push('\n');
-
-                        let mut j = i + 1;
-                        while j < lines.len() {
-                            let next_line = lines[j];
-                            if next_line.starts_with('*') {
-                                let next_level = next_line.chars().take_while(|c| *c == '*').count();
-                                if next_level <= level {
-                                    break;
-                                }
-                            }
-                            entry_content.push_str(next_line);
-                            entry_content.push('\n');
-                            j += 1;
-                        }
-
-                        todos.push(TodoEntry {
-                            keyword,
-                            title,
-                            tags,
-                            file_path: file_path.to_path_buf(),
-                            content: entry_content,
-                            level,
-                        });
-                        break;
-                    }
-                }
+            if let Some(i) = lines.iter().position(|line| {
+                line.starts_with(&stars)
+                    && !line.get(level..).map_or(false, |s| s.starts_with('*'))
+                    && line.contains(title_obj.raw.trim())
+            }) {
+                let entry_content = Self::extract_entry_content(&lines, i, level);
+                todos.push(TodoEntry {
+                    keyword,
+                    title,
+                    tags,
+                    file_path: file_path.to_path_buf(),
+                    content: entry_content,
+                    level,
+                });
             }
         }
 
         todos
     }
 
-    fn parse_title_and_tags(text: &str) -> (String, Vec<String>) {
-        // Tags are at the end in format :tag1:tag2:tag3:
-        // They are right-aligned with spaces before them
-        let text = text.trim();
+    fn extract_entry_content(lines: &[&str], start: usize, level: usize) -> String {
+        let mut content = String::new();
+        content.push_str(lines[start]);
+        content.push('\n');
 
-        // Split from the right to get the last whitespace-separated token
-        // This handles the right-aligned tags with padding spaces
-        let parts: Vec<&str> = text.rsplitn(2, char::is_whitespace).collect();
-
-        if parts.len() == 2 {
-            let potential_tags = parts[0].trim();
-            let potential_title = parts[1].trim();
-
-            // Check if this looks like tags: starts with : ends with : and has at least one more :
-            if potential_tags.starts_with(':')
-                && potential_tags.ends_with(':')
-                && potential_tags.matches(':').count() >= 2 {
-                // Parse the tags
-                let tags: Vec<String> = potential_tags
-                    .split(':')
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
-                    .collect();
-
-                return (potential_title.to_string(), tags);
+        for line in lines.iter().skip(start + 1) {
+            if let Some(next_level) = Self::heading_level(line) {
+                if next_level <= level {
+                    break;
+                }
             }
+            content.push_str(line);
+            content.push('\n');
         }
 
-        // No valid tags found
-        (text.to_string(), Vec::new())
+        content
+    }
+
+    fn heading_level(line: &str) -> Option<usize> {
+        if line.starts_with('*') {
+            Some(line.chars().take_while(|c| *c == '*').count())
+        } else {
+            None
+        }
     }
 
     fn open_todo(&mut self) -> Result<()> {
@@ -323,22 +279,6 @@ impl App {
         Ok(())
     }
 
-    fn save_todo(&mut self) -> Result<()> {
-        if let Mode::Editor { todo, textarea } = &self.mode {
-            let new_content = textarea.lines().join("\n");
-            Self::update_todo_in_file(&todo.file_path, todo, &new_content)?;
-
-            // Return to browser and refresh
-            let todos = Self::extract_all_todos(&self.directory)?;
-            self.mode = Mode::Browser {
-                todos,
-                selected: 0,
-                filter: self.last_filter.clone(),
-            };
-        }
-        Ok(())
-    }
-
     fn update_todo_in_file(file_path: &Path, todo: &TodoEntry, new_content: &str) -> Result<()> {
         let original_content = std::fs::read_to_string(file_path)?;
         let lines: Vec<&str> = original_content.lines().collect();
@@ -350,25 +290,13 @@ impl App {
             let line = lines[i];
 
             // Look for the matching TODO entry
-            if line.starts_with('*') && line.contains(&todo.keyword) && line.contains(&todo.title) {
-                // Found our TODO, replace its content
-                result.push(new_content);
-                found = true;
-
-                // Skip the old content (until next heading of same or higher level)
-                let level = line.chars().take_while(|c| *c == '*').count();
-                i += 1;
-                while i < lines.len() {
-                    let next_line = lines[i];
-                    if next_line.starts_with('*') {
-                        let next_level = next_line.chars().take_while(|c| *c == '*').count();
-                        if next_level <= level {
-                            break;
-                        }
-                    }
-                    i += 1;
+            if let Some(level) = Self::heading_level(line) {
+                if line.contains(&todo.keyword) && line.contains(&todo.title) {
+                    result.push(new_content);
+                    found = true;
+                    i = Self::skip_entry_content(&lines, i + 1, level);
+                    continue;
                 }
-                continue;
             }
 
             result.push(line);
@@ -381,6 +309,20 @@ impl App {
 
         std::fs::write(file_path, result.join("\n"))?;
         Ok(())
+    }
+
+    /// Skip lines until we reach a heading of equal or higher level
+    fn skip_entry_content(lines: &[&str], start: usize, level: usize) -> usize {
+        let mut i = start;
+        while i < lines.len() {
+            if let Some(next_level) = Self::heading_level(lines[i]) {
+                if next_level <= level {
+                    break;
+                }
+            }
+            i += 1;
+        }
+        i
     }
 
     fn back_to_browser(&mut self) -> Result<()> {
@@ -452,7 +394,7 @@ impl App {
     }
 
     fn toggle_view_filter(&mut self) {
-        if let Mode::Browser { todos, selected, filter } = &self.mode {
+        if let Mode::Browser { todos, filter, .. } = &self.mode {
             let new_filter = match filter {
                 ViewFilter::All => ViewFilter::Today,
                 ViewFilter::Today => ViewFilter::All,
@@ -515,140 +457,82 @@ impl App {
         Ok(())
     }
 
-    fn parse_existing_date(content: &str, input_type: &DateInputType) -> Option<NaiveDate> {
-        // For Plain type, use parse_any_date
-        if matches!(input_type, DateInputType::Plain) {
-            return Self::parse_any_date(content);
-        }
+    /// Parse date and time from org-mode timestamp format: <YYYY-MM-DD Day HH:MM>
+    fn parse_org_timestamp(timestamp: &str) -> Option<(NaiveDate, Option<(u32, u32)>)> {
+        let parts: Vec<&str> = timestamp.split_whitespace().collect();
+        let date = parts.first().and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())?;
 
-        let keyword = match input_type {
-            DateInputType::Scheduled => "SCHEDULED:",
-            DateInputType::Deadline => "DEADLINE:",
-            DateInputType::Plain => unreachable!(),
-        };
+        let time = parts.get(2).and_then(|t| {
+            let components: Vec<&str> = t.split(':').collect();
+            if components.len() == 2 {
+                let h = components[0].parse().ok()?;
+                let m = components[1].parse().ok()?;
+                Some((h, m))
+            } else {
+                None
+            }
+        });
 
-        // Look for lines containing the keyword
-        for line in content.lines() {
-            if let Some(pos) = line.find(keyword) {
-                // Extract date from <YYYY-MM-DD ...>
-                let rest = &line[pos + keyword.len()..];
-                if let Some(start) = rest.find('<') {
-                    if let Some(end) = rest.find('>') {
-                        let date_str = &rest[start + 1..end];
-                        // Parse YYYY-MM-DD (ignore time and day of week)
-                        let parts: Vec<&str> = date_str.split_whitespace().collect();
-                        if let Some(date_part) = parts.first() {
-                            if let Ok(date) = NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
-                                return Some(date);
-                            }
-                        }
+        Some((date, time))
+    }
+
+    /// Find all org timestamps in content, optionally filtered by keyword prefix
+    fn find_timestamps<'a>(content: &'a str, keyword: Option<&str>) -> impl Iterator<Item = &'a str> {
+        content.lines().flat_map(move |line| {
+            let search_in = match keyword {
+                Some(kw) => line.find(kw).map(|pos| &line[pos + kw.len()..]),
+                None => Some(line),
+            };
+
+            search_in.into_iter().flat_map(|text| {
+                let mut results = Vec::new();
+                let mut pos = 0;
+                while let Some(start) = text[pos..].find('<') {
+                    let actual_start = pos + start;
+                    if let Some(end) = text[actual_start..].find('>') {
+                        results.push(&text[actual_start + 1..actual_start + end]);
+                        pos = actual_start + end + 1;
+                    } else {
+                        break;
                     }
                 }
-            }
-        }
-        None
+                results
+            })
+        })
+    }
+
+    fn parse_existing_date(content: &str, input_type: &DateInputType) -> Option<NaiveDate> {
+        let keyword = match input_type {
+            DateInputType::Plain => return Self::parse_any_date(content),
+            DateInputType::Scheduled => Some("SCHEDULED:"),
+            DateInputType::Deadline => Some("DEADLINE:"),
+        };
+
+        Self::find_timestamps(content, keyword)
+            .find_map(|ts| Self::parse_org_timestamp(ts).map(|(date, _)| date))
     }
 
     fn parse_any_date(content: &str) -> Option<NaiveDate> {
-        // Parse any date in <YYYY-MM-DD ...> format, regardless of whether it has SCHEDULED: or DEADLINE:
-        for line in content.lines() {
-            let mut search_pos = 0;
-            while let Some(start_pos) = line[search_pos..].find('<') {
-                let actual_start = search_pos + start_pos;
-                if let Some(end_pos) = line[actual_start..].find('>') {
-                    let actual_end = actual_start + end_pos;
-                    let date_str = &line[actual_start + 1..actual_end];
-                    // Parse YYYY-MM-DD (ignore time and day of week)
-                    let parts: Vec<&str> = date_str.split_whitespace().collect();
-                    if let Some(date_part) = parts.first() {
-                        if let Ok(date) = NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
-                            return Some(date);
-                        }
-                    }
-                    search_pos = actual_end + 1;
-                } else {
-                    break;
-                }
-            }
-        }
-        None
+        Self::find_timestamps(content, None)
+            .find_map(|ts| Self::parse_org_timestamp(ts).map(|(date, _)| date))
     }
 
     fn parse_existing_time(content: &str, input_type: &DateInputType) -> (u32, u32) {
-        // For Plain type, parse any time
-        if matches!(input_type, DateInputType::Plain) {
-            return Self::parse_any_time(content);
-        }
-
         let keyword = match input_type {
-            DateInputType::Scheduled => "SCHEDULED:",
-            DateInputType::Deadline => "DEADLINE:",
-            DateInputType::Plain => unreachable!(),
+            DateInputType::Plain => return Self::parse_any_time(content),
+            DateInputType::Scheduled => Some("SCHEDULED:"),
+            DateInputType::Deadline => Some("DEADLINE:"),
         };
 
-        // Look for lines containing the keyword
-        for line in content.lines() {
-            if let Some(pos) = line.find(keyword) {
-                // Extract time from <YYYY-MM-DD Day HH:MM>
-                let rest = &line[pos + keyword.len()..];
-                if let Some(start) = rest.find('<') {
-                    if let Some(end) = rest.find('>') {
-                        let date_str = &rest[start + 1..end];
-                        let parts: Vec<&str> = date_str.split_whitespace().collect();
-                        // Time is the third part (after date and day of week)
-                        if parts.len() >= 3 {
-                            if let Some(time_part) = parts.get(2) {
-                                let time_components: Vec<&str> = time_part.split(':').collect();
-                                if time_components.len() == 2 {
-                                    if let (Ok(h), Ok(m)) = (
-                                        time_components[0].parse::<u32>(),
-                                        time_components[1].parse::<u32>(),
-                                    ) {
-                                        return (h, m);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Default to 00:00 if no time found
-        (0, 0)
+        Self::find_timestamps(content, keyword)
+            .find_map(|ts| Self::parse_org_timestamp(ts).and_then(|(_, time)| time))
+            .unwrap_or((0, 0))
     }
 
     fn parse_any_time(content: &str) -> (u32, u32) {
-        // Parse any time from <YYYY-MM-DD Day HH:MM> format
-        for line in content.lines() {
-            let mut search_pos = 0;
-            while let Some(start_pos) = line[search_pos..].find('<') {
-                let actual_start = search_pos + start_pos;
-                if let Some(end_pos) = line[actual_start..].find('>') {
-                    let actual_end = actual_start + end_pos;
-                    let date_str = &line[actual_start + 1..actual_end];
-                    let parts: Vec<&str> = date_str.split_whitespace().collect();
-                    // Time is the third part (after date and day of week)
-                    if parts.len() >= 3 {
-                        if let Some(time_part) = parts.get(2) {
-                            let time_components: Vec<&str> = time_part.split(':').collect();
-                            if time_components.len() == 2 {
-                                if let (Ok(h), Ok(m)) = (
-                                    time_components[0].parse::<u32>(),
-                                    time_components[1].parse::<u32>(),
-                                ) {
-                                    return (h, m);
-                                }
-                            }
-                        }
-                    }
-                    search_pos = actual_end + 1;
-                } else {
-                    break;
-                }
-            }
-        }
-        // Default to 00:00 if no time found
-        (0, 0)
+        Self::find_timestamps(content, None)
+            .find_map(|ts| Self::parse_org_timestamp(ts).and_then(|(_, time)| time))
+            .unwrap_or((0, 0))
     }
 
     fn format_date_distance(date: NaiveDate) -> String {
@@ -882,126 +766,69 @@ impl App {
         Ok(())
     }
 
-    fn add_scheduled_date(&mut self, date: &str) -> Result<()> {
-        if let Mode::Viewer { todo, .. } = &self.mode {
-            let file_content = std::fs::read_to_string(&todo.file_path)?;
-            let lines: Vec<&str> = file_content.lines().collect();
-            let mut result = Vec::new();
-            let mut found = false;
+    fn add_date(&mut self, date: &str, input_type: &DateInputType) -> Result<()> {
+        let todo = match &self.mode {
+            Mode::Viewer { todo, .. } => todo.clone(),
+            _ => return Ok(()),
+        };
 
-            let scheduled_line = format!("SCHEDULED: <{}>", date);
+        let (new_line, keyword_to_detect) = match input_type {
+            DateInputType::Scheduled => (format!("SCHEDULED: <{}>", date), Some("SCHEDULED:")),
+            DateInputType::Deadline => (format!("DEADLINE: <{}>", date), Some("DEADLINE:")),
+            DateInputType::Plain => (format!("<{}>", date), None),
+        };
 
-            let mut i = 0;
-            while i < lines.len() {
-                let line = lines[i];
+        let file_content = std::fs::read_to_string(&todo.file_path)?;
+        let lines: Vec<&str> = file_content.lines().collect();
+        let mut result = Vec::new();
+        let mut found = false;
+        let mut i = 0;
 
-                // Find the TODO line and add SCHEDULED after it
-                if !found && line.starts_with('*') && line.contains(&todo.keyword) && line.contains(&todo.title) {
-                    result.push(line);
+        while i < lines.len() {
+            let line = lines[i];
 
-                    // Check if next line already has SCHEDULED
-                    let next_line = lines.get(i + 1).unwrap_or(&"");
-                    if next_line.contains("SCHEDULED:") {
-                        // Skip the old SCHEDULED line by incrementing i
+            if !found && line.starts_with('*') && line.contains(&todo.title) {
+                result.push(line.to_string());
+
+                // Skip existing date line if present
+                if let Some(next) = lines.get(i + 1) {
+                    let should_skip = match keyword_to_detect {
+                        Some(kw) => next.contains(kw),
+                        None => {
+                            let trimmed = next.trim();
+                            trimmed.starts_with('<')
+                                && trimmed.ends_with('>')
+                                && !next.contains("SCHEDULED:")
+                                && !next.contains("DEADLINE:")
+                        }
+                    };
+                    if should_skip {
                         i += 1;
                     }
-                    result.push(&scheduled_line);
-                    found = true;
-                } else {
-                    result.push(line);
                 }
-
-                i += 1;
+                result.push(new_line.clone());
+                found = true;
+            } else {
+                result.push(line.to_string());
             }
-
-            std::fs::write(&todo.file_path, result.join("\n"))?;
-
-            // Return to browser
-            self.back_to_browser()?;
+            i += 1;
         }
+
+        std::fs::write(&todo.file_path, result.join("\n"))?;
+        self.back_to_browser()?;
         Ok(())
+    }
+
+    fn add_scheduled_date(&mut self, date: &str) -> Result<()> {
+        self.add_date(date, &DateInputType::Scheduled)
     }
 
     fn add_deadline_date(&mut self, date: &str) -> Result<()> {
-        if let Mode::Viewer { todo, .. } = &self.mode {
-            let file_content = std::fs::read_to_string(&todo.file_path)?;
-            let lines: Vec<&str> = file_content.lines().collect();
-            let mut result = Vec::new();
-            let mut found = false;
-
-            let deadline_line = format!("DEADLINE: <{}>", date);
-
-            let mut i = 0;
-            while i < lines.len() {
-                let line = lines[i];
-
-                // Find the TODO line and add DEADLINE after it
-                if !found && line.starts_with('*') && line.contains(&todo.keyword) && line.contains(&todo.title) {
-                    result.push(line);
-
-                    // Check if next line already has DEADLINE
-                    let next_line = lines.get(i + 1).unwrap_or(&"");
-                    if next_line.contains("DEADLINE:") {
-                        // Skip the old DEADLINE line by incrementing i
-                        i += 1;
-                    }
-                    result.push(&deadline_line);
-                    found = true;
-                } else {
-                    result.push(line);
-                }
-
-                i += 1;
-            }
-
-            std::fs::write(&todo.file_path, result.join("\n"))?;
-
-            // Return to browser
-            self.back_to_browser()?;
-        }
-        Ok(())
+        self.add_date(date, &DateInputType::Deadline)
     }
 
     fn add_plain_date(&mut self, date: &str) -> Result<()> {
-        if let Mode::Viewer { todo, .. } = &self.mode {
-            let file_content = std::fs::read_to_string(&todo.file_path)?;
-            let lines: Vec<&str> = file_content.lines().collect();
-            let mut result = Vec::new();
-            let mut found = false;
-
-            let plain_date_line = format!("<{}>", date);
-
-            let mut i = 0;
-            while i < lines.len() {
-                let line = lines[i];
-
-                // Find the TODO/Note line and add plain date after it
-                if !found && line.starts_with('*') && line.contains(&todo.title) {
-                    result.push(line);
-
-                    // Check if next line already has a plain date (no SCHEDULED: or DEADLINE: prefix)
-                    let next_line = lines.get(i + 1).unwrap_or(&"");
-                    let next_line_trimmed = next_line.trim();
-                    if next_line_trimmed.starts_with('<') && next_line_trimmed.ends_with('>')
-                        && !next_line.contains("SCHEDULED:") && !next_line.contains("DEADLINE:") {
-                        // Skip the old plain date line
-                        i += 1;
-                    }
-                    result.push(&plain_date_line);
-                    found = true;
-                } else {
-                    result.push(line);
-                }
-
-                i += 1;
-            }
-
-            std::fs::write(&todo.file_path, result.join("\n"))?;
-
-            // Return to browser
-            self.back_to_browser()?;
-        }
-        Ok(())
+        self.add_date(date, &DateInputType::Plain)
     }
 
     fn exit_edit_mode_with_save(&mut self) -> Result<()> {
@@ -1082,47 +909,36 @@ impl App {
     }
 
     fn delete_todo_from_browser(&mut self) -> Result<()> {
-        if let Some(todo) = self.get_selected_todo_from_browser() {
-            // Read file content
-            let file_content = std::fs::read_to_string(&todo.file_path)?;
-            let lines: Vec<&str> = file_content.lines().collect();
-            let mut result = Vec::new();
-            let mut i = 0;
-            let mut found = false;
+        let todo = match self.get_selected_todo_from_browser() {
+            Some(t) => t,
+            None => return Ok(()),
+        };
 
-            while i < lines.len() {
-                let line = lines[i];
+        let file_content = std::fs::read_to_string(&todo.file_path)?;
+        let lines: Vec<&str> = file_content.lines().collect();
+        let mut result = Vec::new();
+        let mut i = 0;
+        let mut found = false;
 
-                // Look for the matching TODO entry
-                if !found && line.starts_with('*') && line.contains(&todo.keyword) && line.contains(&todo.title) {
-                    found = true;
-                    let level = line.chars().take_while(|c| *c == '*').count();
+        while i < lines.len() {
+            let line = lines[i];
 
-                    // Skip this entry and all its children
-                    i += 1;
-                    while i < lines.len() {
-                        let next_line = lines[i];
-                        if next_line.starts_with('*') {
-                            let next_level = next_line.chars().take_while(|c| *c == '*').count();
-                            if next_level <= level {
-                                break;
-                            }
-                        }
-                        i += 1;
+            if !found {
+                if let Some(level) = Self::heading_level(line) {
+                    if line.contains(&todo.keyword) && line.contains(&todo.title) {
+                        found = true;
+                        i = Self::skip_entry_content(&lines, i + 1, level);
+                        continue;
                     }
-                    continue;
                 }
-
-                result.push(line);
-                i += 1;
             }
 
-            std::fs::write(&todo.file_path, result.join("\n"))?;
-
-            // Refresh browser
-            self.back_to_browser()?;
+            result.push(line);
+            i += 1;
         }
-        Ok(())
+
+        std::fs::write(&todo.file_path, result.join("\n"))?;
+        self.back_to_browser()
     }
 
     fn create_new_note(&mut self) -> Result<()> {
@@ -1326,7 +1142,7 @@ fn run_app<B: ratatui::backend::Backend>(
                         .iter()
                         .enumerate()
                         .map(|(i, todo)| {
-                            let keyword_style = if todo.keyword == "TODO" {
+                            let _keyword_style = if todo.keyword == "TODO" {
                                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
                             } else if todo.keyword == "DONE" {
                                 Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
