@@ -13,11 +13,6 @@ SCHEDULED: <2026-01-21 Wed 00:00>
 :END:
 
 some random idea
-* TODO what's Torsion free module?                                   :newtag:
-SCHEDULED: <2026-01-17 Sat 00:00>
-:PROPERTIES:
-:CREATED: [2026-01-13 Tue 17:20:31]
-:END:
 * TODO this week
 SCHEDULED: <2026-01-24 Sat 00:00>
 :PROPERTIES:
