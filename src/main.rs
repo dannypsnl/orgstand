@@ -535,42 +535,6 @@ impl App {
             .unwrap_or((0, 0))
     }
 
-    fn format_date_distance(date: NaiveDate) -> String {
-        let today = Local::now().date_naive();
-        let days_diff = (date - today).num_days();
-
-        match days_diff {
-            0 => "Today".to_string(),
-            1 => "Tmrw".to_string(),
-            -1 => "Yday".to_string(),
-            d if d > 0 => {
-                // Future dates
-                if d <= 6 {
-                    format!("+{}d", d)
-                } else if d <= 30 {
-                    let weeks = d / 7;
-                    format!("+{}W", weeks)
-                } else {
-                    let months = d / 30;
-                    format!("+{}M", months)
-                }
-            }
-            d => {
-                // Past dates
-                let abs_d = d.abs();
-                if abs_d <= 6 {
-                    format!("-{}d", abs_d)
-                } else if abs_d <= 30 {
-                    let weeks = abs_d / 7;
-                    format!("-{}W", weeks)
-                } else {
-                    let months = abs_d / 30;
-                    format!("-{}M", months)
-                }
-            }
-        }
-    }
-
     fn get_display_date(todo: &TodoEntry) -> Option<NaiveDate> {
         // Get the nearest date from all date types
         let scheduled = Self::parse_existing_date(&todo.content, &DateInputType::Scheduled);
@@ -1137,65 +1101,122 @@ fn run_app<B: ratatui::backend::Backend>(
                     // Apply filter to todos
                     let filtered_todos = App::filter_todos(todos, filter);
 
-                    // TODO entries browser
-                    let items: Vec<ListItem> = filtered_todos
-                        .iter()
-                        .enumerate()
-                        .map(|(i, todo)| {
-                            let _keyword_style = if todo.keyword == "TODO" {
-                                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-                            } else if todo.keyword == "DONE" {
-                                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-                            } else {
-                                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-                            };
+                    // Build list items - with date headers for Week Agenda view
+                    let items: Vec<ListItem> = if matches!(filter, ViewFilter::Today) {
+                        // Show all days of the week with their entries
+                        let mut result = Vec::new();
 
-                            let tags_str = if !todo.tags.is_empty() {
-                                format!(" :{}: ", todo.tags.join(":"))
-                            } else {
-                                String::new()
-                            };
+                        // Calculate week range (Monday to Sunday)
+                        let today = Local::now().date_naive();
+                        let weekday = today.weekday().num_days_from_monday();
+                        let week_start = today - chrono::Duration::days(weekday as i64);
 
-                            // Get date and format distance (only for Week Agenda view)
-                            let date_str = if matches!(filter, ViewFilter::Today) {
-                                if let Some(date) = App::get_display_date(todo) {
-                                    let distance = App::format_date_distance(date);
-                                    format!(" [{}]", distance)
-                                } else {
-                                    String::new()
-                                }
-                            } else {
-                                String::new()
-                            };
+                        // Iterate through each day of the week
+                        for day_offset in 0..7 {
+                            let current_day = week_start + chrono::Duration::days(day_offset);
 
-                            // Don't show empty brackets for Notes without keywords
-                            let keyword_part = if todo.keyword.is_empty() {
-                                String::new()
-                            } else {
-                                format!("[{}] ", todo.keyword)
-                            };
-
-                            let display = format!(
-                                "{}{}{}{}  - {}",
-                                keyword_part,
-                                todo.title,
-                                tags_str,
-                                date_str,
-                                todo.file_path.file_name().unwrap().to_string_lossy()
-                            );
-
-                            let style = if i == *selected {
+                            // Add date header - highlight today
+                            let header = current_day.format("%A, %d %b, %Y").to_string();
+                            let header_style = if current_day == today {
                                 Style::default()
-                                    .fg(Color::Black)
-                                    .bg(Color::White)
+                                    .fg(Color::Yellow)
                                     .add_modifier(Modifier::BOLD)
                             } else {
                                 Style::default()
+                                    .fg(Color::Cyan)
+                                    .add_modifier(Modifier::BOLD)
                             };
+                            result.push(ListItem::new(format!("── {} ──", header)).style(header_style));
 
-                            ListItem::new(display).style(style)
-                        })
-                        .collect();
+                            // Find todos for this day
+                            let day_todos: Vec<&TodoEntry> = filtered_todos
+                                .iter()
+                                .filter(|t| App::get_display_date(t) == Some(current_day))
+                                .collect();
+
+                            if day_todos.is_empty() {
+                                // Show placeholder for empty days
+                                result.push(ListItem::new("  (no entries)").style(Style::default().fg(Color::DarkGray)));
+                            } else {
+                                for todo in day_todos {
+                                    let tags_str = if !todo.tags.is_empty() {
+                                        format!(" :{}: ", todo.tags.join(":"))
+                                    } else {
+                                        String::new()
+                                    };
+
+                                    let keyword_part = if todo.keyword.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!("[{}] ", todo.keyword)
+                                    };
+
+                                    let display = format!(
+                                        "  {}{}{}  - {}",
+                                        keyword_part,
+                                        todo.title,
+                                        tags_str,
+                                        todo.file_path.file_name().unwrap().to_string_lossy()
+                                    );
+
+                                    // Find the actual index in filtered_todos for selection
+                                    let actual_index = filtered_todos.iter().position(|t| {
+                                        t.title == todo.title && t.file_path == todo.file_path
+                                    }).unwrap_or(0);
+
+                                    let style = if actual_index == *selected {
+                                        Style::default()
+                                            .fg(Color::Black)
+                                            .bg(Color::White)
+                                            .add_modifier(Modifier::BOLD)
+                                    } else {
+                                        Style::default()
+                                    };
+
+                                    result.push(ListItem::new(display).style(style));
+                                }
+                            }
+                        }
+                        result
+                    } else {
+                        // All TODOs view - no date headers
+                        filtered_todos
+                            .iter()
+                            .enumerate()
+                            .map(|(i, todo)| {
+                                let tags_str = if !todo.tags.is_empty() {
+                                    format!(" :{}: ", todo.tags.join(":"))
+                                } else {
+                                    String::new()
+                                };
+
+                                let keyword_part = if todo.keyword.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!("[{}] ", todo.keyword)
+                                };
+
+                                let display = format!(
+                                    "{}{}{}  - {}",
+                                    keyword_part,
+                                    todo.title,
+                                    tags_str,
+                                    todo.file_path.file_name().unwrap().to_string_lossy()
+                                );
+
+                                let style = if i == *selected {
+                                    Style::default()
+                                        .fg(Color::Black)
+                                        .bg(Color::White)
+                                        .add_modifier(Modifier::BOLD)
+                                } else {
+                                    Style::default()
+                                };
+
+                                ListItem::new(display).style(style)
+                            })
+                            .collect()
+                    };
 
                     let view_mode = match filter {
                         ViewFilter::All => "All TODOs",
@@ -1408,17 +1429,10 @@ fn run_app<B: ratatui::backend::Backend>(
                         Line::from("  Esc           Cancel"),
                         Line::from(""),
                         Line::from(vec![Span::styled("== Week Agenda View ==", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
-                        Line::from("  Shows items from Monday to Sunday of the current week"),
-                        Line::from("  Includes all items with SCHEDULED, DEADLINE, or plain dates"),
-                        Line::from("  Date distance displayed (e.g., [Today], [+2d]) to show urgency"),
-                        Line::from(""),
-                        Line::from(vec![Span::styled("== Date Display Format ==", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
-                        Line::from("  [Today]       Item is due today"),
-                        Line::from("  [Tmrw]        Item is due tomorrow"),
-                        Line::from("  [+Xd]         Item is due in X days"),
-                        Line::from("  [+XW]         Item is due in X weeks"),
-                        Line::from("  [+XM]         Item is due in X months"),
-                        Line::from("  [-Xd/W/M]     Item is overdue by X days/weeks/months"),
+                        Line::from("  Shows all days from Monday to Sunday of the current week"),
+                        Line::from("  Each day has a header (e.g., Tuesday, 21 Jan, 2026)"),
+                        Line::from("  Today's header is highlighted in yellow"),
+                        Line::from("  Days without entries show \"(no entries)\""),
                         Line::from(""),
                         Line::from("Press q, Esc, or ? to close this help screen"),
                     ];
