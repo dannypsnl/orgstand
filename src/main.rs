@@ -1145,35 +1145,50 @@ fn run_app<B: ratatui::backend::Backend>(
                                         String::new()
                                     };
 
-                                    let keyword_part = if todo.keyword.is_empty() {
-                                        String::new()
-                                    } else {
-                                        format!("[{}] ", todo.keyword)
-                                    };
-
-                                    let display = format!(
-                                        "  {}{}{}  - {}",
-                                        keyword_part,
-                                        todo.title,
-                                        tags_str,
-                                        todo.file_path.file_name().unwrap().to_string_lossy()
-                                    );
-
                                     // Find the actual index in filtered_todos for selection
                                     let actual_index = filtered_todos.iter().position(|t| {
                                         t.title == todo.title && t.file_path == todo.file_path
                                     }).unwrap_or(0);
 
-                                    let style = if actual_index == *selected {
-                                        Style::default()
-                                            .fg(Color::Black)
-                                            .bg(Color::White)
-                                            .add_modifier(Modifier::BOLD)
+                                    let is_selected = actual_index == *selected;
+
+                                    // Build spans with colored keyword
+                                    let mut spans = vec![Span::raw("  ")];
+
+                                    if !todo.keyword.is_empty() {
+                                        let keyword_style = if is_selected {
+                                            // When selected, use inverted colors
+                                            if todo.keyword == "TODO" {
+                                                Style::default().fg(Color::Red).bg(Color::White).add_modifier(Modifier::BOLD)
+                                            } else if todo.keyword == "DONE" {
+                                                Style::default().fg(Color::DarkGray).bg(Color::White).add_modifier(Modifier::BOLD)
+                                            } else {
+                                                Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD)
+                                            }
+                                        } else {
+                                            if todo.keyword == "TODO" {
+                                                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                                            } else if todo.keyword == "DONE" {
+                                                Style::default().fg(Color::DarkGray)
+                                            } else {
+                                                Style::default()
+                                            }
+                                        };
+                                        spans.push(Span::styled(format!("[{}] ", todo.keyword), keyword_style));
+                                    }
+
+                                    let rest_style = if is_selected {
+                                        Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD)
                                     } else {
                                         Style::default()
                                     };
 
-                                    result.push(ListItem::new(display).style(style));
+                                    spans.push(Span::styled(
+                                        format!("{}{}  - {}", todo.title, tags_str, todo.file_path.file_name().unwrap().to_string_lossy()),
+                                        rest_style
+                                    ));
+
+                                    result.push(ListItem::new(Line::from(spans)));
                                 }
                             }
                         }
@@ -1190,30 +1205,45 @@ fn run_app<B: ratatui::backend::Backend>(
                                     String::new()
                                 };
 
-                                let keyword_part = if todo.keyword.is_empty() {
-                                    String::new()
+                                let is_selected = i == *selected;
+
+                                // Build spans with colored keyword
+                                let mut spans = Vec::new();
+
+                                if !todo.keyword.is_empty() {
+                                    let keyword_style = if is_selected {
+                                        // When selected, use inverted colors
+                                        if todo.keyword == "TODO" {
+                                            Style::default().fg(Color::Red).bg(Color::White).add_modifier(Modifier::BOLD)
+                                        } else if todo.keyword == "DONE" {
+                                            Style::default().fg(Color::DarkGray).bg(Color::White).add_modifier(Modifier::BOLD)
+                                        } else {
+                                            Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD)
+                                        }
+                                    } else {
+                                        if todo.keyword == "TODO" {
+                                            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                                        } else if todo.keyword == "DONE" {
+                                            Style::default().fg(Color::DarkGray)
+                                        } else {
+                                            Style::default()
+                                        }
+                                    };
+                                    spans.push(Span::styled(format!("[{}] ", todo.keyword), keyword_style));
+                                }
+
+                                let rest_style = if is_selected {
+                                    Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD)
                                 } else {
-                                    format!("[{}] ", todo.keyword)
+                                    Style::default()
                                 };
 
-                                let display = format!(
-                                    "{}{}{}  - {}",
-                                    keyword_part,
-                                    todo.title,
-                                    tags_str,
-                                    todo.file_path.file_name().unwrap().to_string_lossy()
-                                );
+                                spans.push(Span::styled(
+                                    format!("{}{}  - {}", todo.title, tags_str, todo.file_path.file_name().unwrap().to_string_lossy()),
+                                    rest_style
+                                ));
 
-                                let style = if i == *selected {
-                                    Style::default()
-                                        .fg(Color::Black)
-                                        .bg(Color::White)
-                                        .add_modifier(Modifier::BOLD)
-                                } else {
-                                    Style::default()
-                                };
-
-                                ListItem::new(display).style(style)
+                                ListItem::new(Line::from(spans))
                             })
                             .collect()
                     };
