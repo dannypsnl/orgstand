@@ -83,3 +83,86 @@ pub fn extract_all_todos(dir: &Path) -> Result<Vec<TodoEntry>> {
 
     Ok(all_todos)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_heading_level_star() {
+        assert_eq!(heading_level("* foo"), Some(1));
+    }
+
+    #[test]
+    fn test_heading_level_multi_star() {
+        assert_eq!(heading_level("*** bar"), Some(3));
+    }
+
+    #[test]
+    fn test_heading_level_not_heading() {
+        assert_eq!(heading_level("normal text"), None);
+        assert_eq!(heading_level(""), None);
+    }
+
+    #[test]
+    fn test_extract_entry_content_single() {
+        let lines = vec!["* TODO Task", "some body", "more body"];
+        let content = extract_entry_content(&lines, 0, 1);
+        assert!(content.contains("* TODO Task"));
+        assert!(content.contains("some body"));
+        assert!(content.contains("more body"));
+    }
+
+    #[test]
+    fn test_extract_entry_content_stops_at_sibling() {
+        let lines = vec!["* TODO First", "body", "* TODO Second"];
+        let content = extract_entry_content(&lines, 0, 1);
+        assert!(content.contains("* TODO First"));
+        assert!(content.contains("body"));
+        assert!(!content.contains("* TODO Second"));
+    }
+
+    #[test]
+    fn test_extract_entry_content_includes_children() {
+        let lines = vec!["* Parent", "** Child", "child body", "* Sibling"];
+        let content = extract_entry_content(&lines, 0, 1);
+        assert!(content.contains("** Child"));
+        assert!(content.contains("child body"));
+        assert!(!content.contains("* Sibling"));
+    }
+
+    #[test]
+    fn test_extract_todos_from_content_keyword() {
+        let content = "* TODO Fix bug\nsome description\n* DONE Old task\n";
+        let path = Path::new("test.org");
+        let todos = extract_todos_from_content(content, path);
+        assert_eq!(todos.len(), 2);
+
+        let todo = todos.iter().find(|t| t.keyword == "TODO").unwrap();
+        assert_eq!(todo.title, "Fix bug");
+
+        let done = todos.iter().find(|t| t.keyword == "DONE").unwrap();
+        assert_eq!(done.title, "Old task");
+    }
+
+    #[test]
+    fn test_extract_todos_from_content_no_keyword() {
+        let content = "* A plain note\nbody text\n";
+        let path = Path::new("test.org");
+        let todos = extract_todos_from_content(content, path);
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].keyword, "");
+        assert_eq!(todos[0].title, "A plain note");
+    }
+
+    #[test]
+    fn test_extract_todos_tags() {
+        let content = "* TODO Task with tags                                             :work:home:\n";
+        let path = Path::new("test.org");
+        let todos = extract_todos_from_content(content, path);
+        assert_eq!(todos.len(), 1);
+        assert!(todos[0].tags.contains(&"work".to_string()));
+        assert!(todos[0].tags.contains(&"home".to_string()));
+    }
+}

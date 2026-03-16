@@ -109,3 +109,82 @@ pub fn get_display_date(todo: &TodoEntry) -> Option<NaiveDate> {
         .into_iter()
         .min_by_key(|date| (*date - today).num_days().abs())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::DateInputType;
+
+    #[test]
+    fn test_parse_org_timestamp_date_only() {
+        let (date, time) = parse_org_timestamp("2026-03-16 Mon").unwrap();
+        assert_eq!(date.to_string(), "2026-03-16");
+        assert!(time.is_none());
+    }
+
+    #[test]
+    fn test_parse_org_timestamp_with_time() {
+        let (date, time) = parse_org_timestamp("2026-03-16 Mon 09:30").unwrap();
+        assert_eq!(date.to_string(), "2026-03-16");
+        assert_eq!(time, Some((9, 30)));
+    }
+
+    #[test]
+    fn test_parse_org_timestamp_invalid() {
+        assert!(parse_org_timestamp("not-a-date").is_none());
+    }
+
+    #[test]
+    fn test_find_timestamps_no_keyword() {
+        let content = "Some text <2026-03-16 Mon> and <2026-03-17 Tue>";
+        let results: Vec<_> = find_timestamps(content, None).collect();
+        assert_eq!(results.len(), 2);
+        assert!(results[0].contains("2026-03-16"));
+        assert!(results[1].contains("2026-03-17"));
+    }
+
+    #[test]
+    fn test_find_timestamps_with_keyword() {
+        let content = "SCHEDULED: <2026-03-16 Mon>\nDEADLINE: <2026-03-20 Fri>";
+        let results: Vec<_> = find_timestamps(content, Some("SCHEDULED:")).collect();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].contains("2026-03-16"));
+    }
+
+    #[test]
+    fn test_parse_existing_date_scheduled() {
+        let content = "* TODO Task\nSCHEDULED: <2026-03-16 Mon>\n";
+        let date = parse_existing_date(content, &DateInputType::Scheduled).unwrap();
+        assert_eq!(date.to_string(), "2026-03-16");
+    }
+
+    #[test]
+    fn test_parse_existing_date_deadline() {
+        let content = "* TODO Task\nDEADLINE: <2026-04-01 Wed>\n";
+        let date = parse_existing_date(content, &DateInputType::Deadline).unwrap();
+        assert_eq!(date.to_string(), "2026-04-01");
+    }
+
+    #[test]
+    fn test_parse_any_date() {
+        let content = "Some note with <2026-05-10 Sun> inline.";
+        let date = parse_any_date(content).unwrap();
+        assert_eq!(date.to_string(), "2026-05-10");
+    }
+
+    #[test]
+    fn test_parse_existing_time() {
+        let content = "SCHEDULED: <2026-03-16 Mon 14:45>\n";
+        let (h, m) = parse_existing_time(content, &DateInputType::Scheduled);
+        assert_eq!(h, 14);
+        assert_eq!(m, 45);
+    }
+
+    #[test]
+    fn test_parse_existing_time_missing() {
+        let content = "SCHEDULED: <2026-03-16 Mon>\n";
+        let (h, m) = parse_existing_time(content, &DateInputType::Scheduled);
+        assert_eq!(h, 0);
+        assert_eq!(m, 0);
+    }
+}

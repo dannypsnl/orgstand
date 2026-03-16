@@ -10,3 +10,6 @@ crossterm = "0.28"
 anyhow = "1.0"
 tui-textarea = "0.6"
 chrono = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
